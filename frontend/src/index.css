@@ -279,6 +279,112 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   align-items: center;
   justify-content: center;
 }
+.npc-hover-label {
+  background: rgba(11, 14, 20, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+.npc-label-name { font-weight: 700; font-size: 12px; }
+.npc-label-role { color: var(--text-dim); font-size: 10px; margin-top: 1px; }
+
+.npc-card {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 260px;
+  background: rgba(11, 14, 20, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  z-index: 20;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.npc-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.npc-card-lane {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  color: #0b0e14;
+}
+.npc-card-lane.sr { background: var(--sr); }
+.npc-card-lane.jr { background: var(--jr); }
+.npc-card-name {
+  flex: 1;
+  font-weight: 700;
+  font-size: 15px;
+}
+.npc-card-close {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+.npc-card-close:hover { color: var(--text); }
+.npc-card-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 12px;
+}
+.npc-card-row:last-of-type { border-bottom: 0; }
+.npc-card-k { color: var(--text-dim); }
+.npc-card-v { font-weight: 600; }
+.npc-card-v.cond-injured { color: var(--bad); }
+.npc-card-v.cond-incapacitated { color: var(--warn); }
+.npc-card-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  line-height: 1.45;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.minimap {
+  position: fixed;
+  right: 20px;
+  top: 80px;
+  background: rgba(11, 14, 20, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  z-index: 15;
+  backdrop-filter: blur(8px);
+}
+.minimap-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: center;
+  margin-bottom: 4px;
+}
+.minimap canvas {
+  display: block;
+  border-radius: 4px;
+  image-rendering: pixelated;
+}
+
 .virtual-joystick-knob {
   width: 44px;
   height: 44px;

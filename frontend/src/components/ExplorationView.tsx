@@ -1,5 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, PointerLockControls, Sky } from '@react-three/drei';
+import { OrbitControls, PointerLockControls, Sky, Html } from '@react-three/drei';
+import { EffectComposer, Bloom, Vignette, ToneMapping } from '@react-three/postprocessing';
+import { BlendFunction, ToneMappingMode } from 'postprocessing';
 import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import type { NPC, World } from '../types';
@@ -96,9 +98,12 @@ function Terrain({ tiles }: { tiles: Tile[] }) {
 interface NPCMarkerProps {
   npc: NPC;
   tileHeight: number;
+  onHover: (npc: NPC | null) => void;
+  onClick: (npc: NPC) => void;
+  isSelected: boolean;
 }
 
-function NPCMarker({ npc, tileHeight }: NPCMarkerProps) {
+function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerProps) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Mesh>(null);
 
@@ -129,7 +134,37 @@ function NPCMarker({ npc, tileHeight }: NPCMarkerProps) {
   const finalColor = dim ? new THREE.Color(color).lerp(new THREE.Color('#7a7a7a'), 0.55).getStyle() : color;
 
   return (
-    <group ref={groupRef} position={targetPos}>
+    <group
+      ref={groupRef}
+      position={targetPos}
+      onPointerOver={(e) => {
+        e.stopPropagation();
+        onHover(npc);
+        document.body.style.cursor = 'pointer';
+      }}
+      onPointerOut={() => {
+        onHover(null);
+        document.body.style.cursor = '';
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onClick(npc);
+      }}
+    >
+      {/* Selection ring under the feet */}
+      {isSelected && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, Math.max(0.4, tileHeight) + 0.06, 0]}>
+          <ringGeometry args={[0.4, 0.55, 24]} />
+          <meshStandardMaterial
+            color="#fde047"
+            emissive="#fde047"
+            emissiveIntensity={1.5}
+            transparent
+            opacity={0.9}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
       <mesh position={[0, Math.max(0.4, tileHeight) + 0.45, 0]} castShadow>
         <cylinderGeometry args={[0.22, 0.26, 0.8, 10]} />
         <meshStandardMaterial color={finalColor} roughness={0.6} />
@@ -596,6 +631,8 @@ interface Props {
 export function ExplorationView({ world, npcs, onExit }: Props) {
   const [mode, setMode] = useState<CamMode>('orbit');
   const [locked, setLocked] = useState(false);
+  const [hoveredNPC, setHoveredNPC] = useState<NPC | null>(null);
+  const [selectedNPC, setSelectedNPC] = useState<NPC | null>(null);
   const isTouch = useMemo(() => isTouchDevice(), []);
 
   // Touch look: track single-finger drag outside the joystick area and
@@ -759,8 +796,43 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             key={npc.id}
             npc={npc}
             tileHeight={heightAt.get(`${npc.x},${npc.y}`) ?? 0.5}
+            onHover={setHoveredNPC}
+            onClick={setSelectedNPC}
+            isSelected={selectedNPC?.id === npc.id}
           />
         ))}
+        {/* Hover label floating above hovered NPC */}
+        {hoveredNPC && hoveredNPC.x != null && hoveredNPC.y != null && (
+          <Html
+            position={[
+              ((hoveredNPC.x ?? 0) - GRID_W / 2) * UNIT,
+              (heightAt.get(`${hoveredNPC.x},${hoveredNPC.y}`) ?? 0.5) + 1.8,
+              ((hoveredNPC.y ?? 0) - GRID_H / 2) * UNIT,
+            ]}
+            center
+            distanceFactor={15}
+            style={{ pointerEvents: 'none' }}
+          >
+            <div className="npc-hover-label">
+              <div className="npc-label-name">{hoveredNPC.name}</div>
+              <div className="npc-label-role">{hoveredNPC.role} · Lv {hoveredNPC.skill}</div>
+            </div>
+          </Html>
+        )}
+        {/* Postprocessing: bloom on emissive materials (fire, beams), soft
+            vignette, ACES tonemap for cinematic color. Bloom threshold 0.85
+            so only actually-bright things glow; mild intensity so it reads
+            atmospheric not cartoony. */}
+        <EffectComposer multisampling={0} enableNormalPass={false}>
+          <Bloom
+            intensity={0.55}
+            luminanceThreshold={0.85}
+            luminanceSmoothing={0.35}
+            mipmapBlur
+          />
+          <Vignette eskil={false} offset={0.15} darkness={0.6} blendFunction={BlendFunction.NORMAL} />
+          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+        </EffectComposer>
         {mode === 'orbit' ? (
           <OrbitControls
             makeDefault
@@ -789,6 +861,95 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           }}
         />
       )}
+
+      {/* Selected NPC card (RS-style right-click-ish info) */}
+      {selectedNPC && (
+        <div className="npc-card">
+          <div className="npc-card-head">
+            <span className={`npc-card-lane ${selectedNPC.lane}`}>
+              {selectedNPC.lane === 'sr' ? 'SR' : 'JR'}
+            </span>
+            <div className="npc-card-name">{selectedNPC.name}</div>
+            <button
+              className="npc-card-close"
+              onClick={() => setSelectedNPC(null)}
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+          <div className="npc-card-row">
+            <span className="npc-card-k">Role</span>
+            <span className="npc-card-v">{selectedNPC.role}</span>
+          </div>
+          <div className="npc-card-row">
+            <span className="npc-card-k">Skill</span>
+            <span className="npc-card-v">Level {selectedNPC.skill}</span>
+          </div>
+          <div className="npc-card-row">
+            <span className="npc-card-k">Morale</span>
+            <span className="npc-card-v">{selectedNPC.morale}</span>
+          </div>
+          {selectedNPC.condition && selectedNPC.condition !== 'healthy' && (
+            <div className="npc-card-row">
+              <span className="npc-card-k">Condition</span>
+              <span className={`npc-card-v cond-${selectedNPC.condition}`}>
+                {selectedNPC.condition}
+              </span>
+            </div>
+          )}
+          <div className="npc-card-status">{selectedNPC.status}</div>
+        </div>
+      )}
+
+      {/* Minimap - top-down quick-glance grid */}
+      <Minimap tiles={tiles} npcs={aliveNPCs} />
+    </div>
+  );
+}
+
+// Minimap component - small top-down canvas in corner, shows terrain
+// tiles + live NPC dots + selected NPC highlight. Reads backend state
+// via its own 1s interval so it doesn't slow the 3D render loop.
+function Minimap({ tiles, npcs }: { tiles: Tile[]; npcs: NPC[] }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const draw = () => {
+      const W = canvas.width;
+      const H = canvas.height;
+      const sx = W / GRID_W;
+      const sy = H / GRID_H;
+      ctx.fillStyle = '#0b0e14';
+      ctx.fillRect(0, 0, W, H);
+      for (const t of tiles) {
+        ctx.fillStyle =
+          t.type === 'water' ? '#13263d' :
+          t.type === 'beach' ? '#b89560' :
+          t.type === 'plains' ? '#3d4d2a' :
+          t.type === 'forest' ? '#1f3d1a' :
+                                 '#555a63';
+        ctx.fillRect(t.x * sx, t.y * sy, sx + 0.5, sy + 0.5);
+      }
+      for (const n of npcs) {
+        if (n.x == null || n.y == null) continue;
+        ctx.fillStyle = n.lane === 'sr' ? '#fb923c' : '#38bdf8';
+        ctx.fillRect(n.x * sx - 1, n.y * sy - 1, 3, 3);
+      }
+    };
+    draw();
+    const id = window.setInterval(draw, 1000);
+    return () => window.clearInterval(id);
+  }, [tiles, npcs]);
+
+  return (
+    <div className="minimap">
+      <div className="minimap-label">Island</div>
+      <canvas ref={ref} width={160} height={96} />
     </div>
   );
 }
