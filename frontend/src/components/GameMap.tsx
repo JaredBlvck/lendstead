@@ -10,26 +10,40 @@ import {
 } from '../lib/terrain';
 import { seedPositions, type NPCPosition } from '../lib/positions';
 import { useAnimatedPositions } from '../hooks/useAnimatedPositions';
-import { rollEvent, pruneExpired, type LocalEvent } from '../lib/events';
+import { useEvents } from '../hooks/useWorld';
+import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
 
 interface Props {
   world: World;
   npcs: NPC[];
 }
 
-// How often the client-side event simulator rolls. Backend events, when
-// they arrive, will take priority; this just keeps the map alive now.
-const EVENT_ROLL_MS = 4200;
-
 export function GameMap({ world, npcs }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
-  const [events, setEvents] = useState<LocalEvent[]>([]);
   const [hoverTile, setHoverTile] = useState<{ x: number; y: number } | null>(null);
 
-  // Terrain: prefer backend-provided grid when it ships; fall back to
-  // deterministic client generation keyed by civ_name.
+  // Backend is source of truth for events now.
+  const eventsQuery = useEvents();
+  const firstSeenRef = useRef<Map<number, number>>(new Map());
+  const [displayEvents, setDisplayEvents] = useState<DisplayEvent[]>([]);
+
+  // Rebuild display events whenever the /api/events payload changes, and
+  // also tick once per second so expired events drop out of the list.
+  useEffect(() => {
+    const rebuild = () => {
+      const now = performance.now();
+      const src = eventsQuery.data ?? [];
+      setDisplayEvents(buildDisplayEvents(src, firstSeenRef.current, now));
+    };
+    rebuild();
+    const id = window.setInterval(rebuild, 1000);
+    return () => window.clearInterval(id);
+  }, [eventsQuery.data]);
+
+  // Terrain: prefer backend-shipped grid; fall back to deterministic client
+  // generation keyed by civ_name while backend is warming up.
   const tiles = useMemo<Tile[]>(() => {
     if (world.terrain && world.terrain.length === GRID_W * GRID_H) {
       return world.terrain.map((t) => ({
@@ -42,11 +56,14 @@ export function GameMap({ world, npcs }: Props) {
     return generateTerrain(world.civ_name);
   }, [world.terrain, world.civ_name]);
 
-  // NPC positions: prefer backend x/y when present; seed client-side otherwise
+  // NPC target positions: use backend x/y if all alive NPCs have them,
+  // otherwise seed client-side. Backend has them as of migration 002 so
+  // this branch is the common path now.
   const targetPositions = useMemo<NPCPosition[]>(() => {
-    const withBackend = npcs.filter((n) => n.alive && n.x != null && n.y != null);
-    if (withBackend.length === npcs.filter((n) => n.alive).length && withBackend.length > 0) {
-      return withBackend.map((n) => ({ id: n.id, x: n.x!, y: n.y! }));
+    const alive = npcs.filter((n) => n.alive);
+    const withXY = alive.filter((n) => n.x != null && n.y != null);
+    if (withXY.length === alive.length && alive.length > 0) {
+      return withXY.map((n) => ({ id: n.id, x: n.x!, y: n.y! }));
     }
     return seedPositions(npcs, tiles, world.cycle);
   }, [npcs, tiles, world.cycle]);
@@ -64,19 +81,6 @@ export function GameMap({ world, npcs }: Props) {
     setSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
   }, []);
-
-  // Event simulator tick
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      const now = performance.now();
-      setEvents((prev) => {
-        const pruned = pruneExpired(prev, now);
-        const fresh = rollEvent(tiles, now);
-        return fresh ? [...pruned, fresh] : pruned;
-      });
-    }, EVENT_ROLL_MS);
-    return () => window.clearInterval(id);
-  }, [tiles]);
 
   // Render loop
   useEffect(() => {
@@ -114,14 +118,12 @@ export function GameMap({ world, npcs }: Props) {
         ctx.fillStyle = base;
         ctx.fillRect(px, py, TS + 0.5, TS + 0.5);
 
-        // Subtle height shading for non-water
         if (tile.type !== 'water') {
           const shade = Math.min(0.25, Math.max(0, tile.height - 0.3) * 0.6);
           ctx.fillStyle = `rgba(255,255,255,${shade})`;
           ctx.fillRect(px, py, TS + 0.5, TS + 0.5);
         }
 
-        // Water ripple (very subtle time-based)
         if (tile.type === 'water') {
           const ripple = 0.04 + 0.03 * Math.sin(now / 800 + tile.x * 0.4 + tile.y * 0.5);
           ctx.fillStyle = `rgba(94,234,212,${ripple})`;
@@ -129,18 +131,7 @@ export function GameMap({ world, npcs }: Props) {
         }
       }
 
-      // Claimed territory overlay (derived from infra zones count)
-      const zoneCount = Math.max(
-        0,
-        ...[
-          world.infrastructure.zones_claimed,
-          world.infrastructure.claims,
-        ]
-          .flat()
-          .filter(Boolean).length
-          ? [Array.isArray(world.infrastructure.claims) ? world.infrastructure.claims.length : 0]
-          : [0],
-      );
+      // Claimed territory overlay (derived from infra.claims strings)
       const claims = Array.isArray(world.infrastructure.claims)
         ? (world.infrastructure.claims as string[])
         : [];
@@ -164,13 +155,12 @@ export function GameMap({ world, npcs }: Props) {
           ctx.fillRect(gx - radius, gy - radius, radius * 2, radius * 2);
         });
         ctx.restore();
-        void zoneCount;
       }
 
-      // Events layer (below NPCs for storms, above for discoveries/threats)
-      const storms = events.filter((e) => e.kind === 'storm');
+      // Events layer: storms below NPCs (atmospheric), discoveries & threats above
+      const storms = displayEvents.filter((e) => e.kind === 'storm');
       for (const e of storms) {
-        const life = Math.min(1, (now - e.spawnedAt) / e.lifespanMs);
+        const life = Math.min(1, (now - e.seenAt) / e.lifespanMs);
         const fade = life < 0.15 ? life / 0.15 : life > 0.85 ? (1 - life) / 0.15 : 1;
         const cx = offsetX + e.x * TS;
         const cy = offsetY + e.y * TS;
@@ -208,7 +198,6 @@ export function GameMap({ world, npcs }: Props) {
         const size = Math.max(3, TS * 0.32);
         drawNPCShape(ctx, npc.role, px, py, size);
 
-        // Skill halo for skill>=6
         if (npc.skill >= 6) {
           ctx.strokeStyle = `rgba(255,255,255,${0.35 + 0.2 * Math.sin(now / 500 + id)})`;
           ctx.lineWidth = 1.5;
@@ -219,9 +208,9 @@ export function GameMap({ world, npcs }: Props) {
       });
 
       // Discovery + threat pings above NPCs
-      for (const e of events) {
+      for (const e of displayEvents) {
         if (e.kind === 'storm') continue;
-        const life = Math.min(1, (now - e.spawnedAt) / e.lifespanMs);
+        const life = Math.min(1, (now - e.seenAt) / e.lifespanMs);
         const pulse = 0.5 + 0.5 * Math.sin(now / 200);
         const cx = offsetX + (e.x + 0.5) * TS;
         const cy = offsetY + (e.y + 0.5) * TS;
@@ -243,7 +232,6 @@ export function GameMap({ world, npcs }: Props) {
           ctx.fill();
         }
 
-        // Label near event
         ctx.fillStyle = `rgba(230,237,243,${(1 - life) * 0.9})`;
         ctx.font = '11px ui-sans-serif, system-ui';
         ctx.fillText(e.label, cx + 10, cy - 4);
@@ -274,7 +262,7 @@ export function GameMap({ world, npcs }: Props) {
 
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [tiles, size, positions, npcs, events, hoverTile, world.infrastructure]);
+  }, [tiles, size, positions, npcs, displayEvents, hoverTile, world.infrastructure]);
 
   const onMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -300,7 +288,7 @@ export function GameMap({ world, npcs }: Props) {
           <span className="dot sr" /> Sr
           <span className="dot jr" /> Jr
           <span style={{ marginLeft: 10, color: 'var(--text-dim)', fontSize: 10 }}>
-            events: {events.length}
+            events: {displayEvents.length}
           </span>
         </span>
       </h2>
@@ -332,19 +320,15 @@ function drawNPCShape(
 
   ctx.beginPath();
   if (isScout) {
-    // triangle
     ctx.moveTo(x, y - s);
     ctx.lineTo(x - s * 0.85, y + s * 0.7);
     ctx.lineTo(x + s * 0.85, y + s * 0.7);
     ctx.closePath();
   } else if (isBuilder) {
-    // square
     ctx.rect(x - s * 0.8, y - s * 0.8, s * 1.6, s * 1.6);
   } else if (isForager) {
-    // circle
     ctx.arc(x, y, s, 0, Math.PI * 2);
   } else {
-    // diamond
     ctx.moveTo(x, y - s);
     ctx.lineTo(x + s, y);
     ctx.lineTo(x, y + s);

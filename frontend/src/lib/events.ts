@@ -1,91 +1,93 @@
-// Client-side event simulator. Generates storm / discovery / threat events
-// on a timer so the map feels alive even before the backend emits them.
-// When /api/events returns real events with these kinds, they take priority
-// and the simulator stays quiet.
+// Display-layer event shape. Backend is now the source of truth via
+// /api/events; we convert its storm / discovery / threat_sighted events
+// into a small display model the map renderer consumes. Each event gets
+// a client-side `seenAt` so first-observation controls fade-in/out - that
+// way existing events on refresh don't all spawn at once.
 
-import { GRID_W, GRID_H, tileAt, type Tile } from './terrain';
+import type { CycleEvent } from '../types';
 
-export type LocalEventKind = 'storm' | 'discovery' | 'threat';
+export type DisplayEventKind = 'storm' | 'discovery' | 'threat';
 
-export interface LocalEvent {
+export interface DisplayEvent {
   id: string;
-  kind: LocalEventKind;
+  kind: DisplayEventKind;
   x: number;
   y: number;
   radius: number;
-  spawnedAt: number;
-  lifespanMs: number;
   label: string;
+  seenAt: number;
+  lifespanMs: number;
 }
 
-const STORM_LABELS = ['squall', 'heavy rain', 'coastal storm', 'wind front'];
-const DISCOVERY_LABELS = [
-  'fresh spring found',
-  'ore seam spotted',
-  'wild grain patch',
-  'driftwood cache',
-  'cave entrance',
-  'game trail',
-];
-const THREAT_LABELS = [
-  'unknown tracks',
-  'distant smoke',
-  'cliff collapse risk',
-  'animal sighting',
-];
+const LIFESPAN: Record<DisplayEventKind, number> = {
+  storm: 12000,
+  discovery: 14000,
+  threat: 9000,
+};
 
-function pick<T>(arr: T[], rand: () => number): T {
-  return arr[Math.floor(rand() * arr.length)];
-}
-
-export function rollEvent(tiles: Tile[], now: number): LocalEvent | null {
-  const rand = Math.random;
-  // 60% chance to skip on any roll so the pace stays patient
-  if (rand() < 0.6) return null;
-
-  const roll = rand();
-  let kind: LocalEventKind;
-  if (roll < 0.5) kind = 'discovery';
-  else if (roll < 0.8) kind = 'storm';
-  else kind = 'threat';
-
-  // Pick a valid tile for the event type
-  let tries = 0;
-  let x = 0;
-  let y = 0;
-  let tile: Tile | undefined;
-  while (tries < 20) {
-    x = Math.floor(rand() * GRID_W);
-    y = Math.floor(rand() * GRID_H);
-    tile = tileAt(tiles, x, y);
-    if (!tile) {
-      tries++;
-      continue;
-    }
-    if (kind === 'discovery' && tile.type !== 'water') break;
-    if (kind === 'storm') break;
-    if (kind === 'threat' && tile.type !== 'water') break;
-    tries++;
+function asXY(v: unknown): [number, number] | null {
+  if (Array.isArray(v) && v.length >= 2 && typeof v[0] === 'number' && typeof v[1] === 'number') {
+    return [v[0], v[1]];
   }
-  if (!tile) return null;
+  return null;
+}
 
-  const label =
-    kind === 'storm' ? pick(STORM_LABELS, rand)
-    : kind === 'discovery' ? pick(DISCOVERY_LABELS, rand)
-    : pick(THREAT_LABELS, rand);
+// Convert a backend CycleEvent into a DisplayEvent, or null if the event
+// kind isn't one we render.
+export function toDisplayEvent(
+  event: CycleEvent,
+  firstSeen: Map<number, number>,
+  now: number,
+): DisplayEvent | null {
+  const payload = (event.payload || {}) as Record<string, unknown>;
+
+  let kind: DisplayEventKind;
+  if (event.kind === 'storm') kind = 'storm';
+  else if (event.kind === 'discovery') kind = 'discovery';
+  else if (event.kind === 'threat_sighted' || event.kind === 'threat') kind = 'threat';
+  else return null;
+
+  // Position preference: center, tile, first affected tile
+  let xy =
+    asXY(payload.center) ||
+    asXY(payload.tile) ||
+    asXY((payload.affected_tiles as unknown[])?.[0]);
+  if (!xy) return null;
+
+  const radius =
+    typeof payload.radius === 'number'
+      ? payload.radius
+      : kind === 'storm'
+        ? 6
+        : 2;
+
+  const label = typeof payload.label === 'string' ? payload.label : kind;
+
+  const seenAt = firstSeen.get(event.id) ?? now;
+  firstSeen.set(event.id, seenAt);
 
   return {
-    id: `${now}-${kind}-${x}-${y}`,
+    id: `srv-${event.id}`,
     kind,
-    x,
-    y,
-    radius: kind === 'storm' ? 6 + Math.floor(rand() * 4) : 2,
-    spawnedAt: now,
-    lifespanMs: kind === 'storm' ? 9000 : kind === 'threat' ? 7000 : 11000,
+    x: xy[0],
+    y: xy[1],
+    radius,
     label,
+    seenAt,
+    lifespanMs: LIFESPAN[kind],
   };
 }
 
-export function pruneExpired(events: LocalEvent[], now: number): LocalEvent[] {
-  return events.filter((e) => now - e.spawnedAt < e.lifespanMs);
+export function buildDisplayEvents(
+  events: CycleEvent[],
+  firstSeen: Map<number, number>,
+  now: number,
+): DisplayEvent[] {
+  const out: DisplayEvent[] = [];
+  for (const e of events) {
+    const d = toDisplayEvent(e, firstSeen, now);
+    if (!d) continue;
+    if (now - d.seenAt < d.lifespanMs) out.push(d);
+  }
+  return out;
 }
