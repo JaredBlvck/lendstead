@@ -12,6 +12,16 @@ import {
 } from '../lib/terrain';
 import { useEvents } from '../hooks/useWorld';
 import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
+import { VirtualJoystick } from './VirtualJoystick';
+
+// Input state shared by keyboard + joystick. FPSController reads this
+// instead of a key map directly, so touch and mouse+keyboard both work.
+const moveInput = { x: 0, y: 0 };
+const lookInput = { yaw: 0, pitch: 0 };
+
+function isTouchDevice(): boolean {
+  return typeof window !== 'undefined' && 'ontouchstart' in window;
+}
 
 // v6.1 Phase 2+3+4: FPS walk mode, live NPC sync with tween, structures.
 
@@ -362,11 +372,16 @@ function FPSController({ heightAt, enabled }: { heightAt: Map<string, number>; e
   const { camera } = useThree();
   const keys = useRef<Record<string, boolean>>({});
   const velocity = useRef(new THREE.Vector3());
+  // Yaw/pitch state for touch look (keyboard doesn't touch these; mouse
+  // look on desktop is still handled by PointerLockControls).
+  const yaw = useRef(0);
+  const pitch = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
-    // Position camera on the island surface when entering FPS
     camera.position.set(0, 3, 0);
+    yaw.current = camera.rotation.y;
+    pitch.current = camera.rotation.x;
     const onKeyDown = (e: KeyboardEvent) => {
       keys.current[e.code] = true;
     };
@@ -384,8 +399,26 @@ function FPSController({ heightAt, enabled }: { heightAt: Map<string, number>; e
   useFrame((_, delta) => {
     if (!enabled) return;
     const BASE_SPEED = 6;
-    const SPRINT = keys.current['ShiftLeft'] || keys.current['ShiftRight'] ? 2.2 : 1;
-    const speed = BASE_SPEED * SPRINT;
+    const kbSprint = keys.current['ShiftLeft'] || keys.current['ShiftRight'] ? 2.2 : 1;
+    const speed = BASE_SPEED * kbSprint;
+
+    // Apply touch look deltas to yaw/pitch, then rotate camera to match.
+    // Mouse-look via PointerLockControls mutates rotation directly and
+    // we sync yaw/pitch on each frame so they don't drift apart.
+    if (lookInput.yaw !== 0 || lookInput.pitch !== 0) {
+      yaw.current -= lookInput.yaw;
+      pitch.current -= lookInput.pitch;
+      pitch.current = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, pitch.current));
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = yaw.current;
+      camera.rotation.x = pitch.current;
+      lookInput.yaw = 0;
+      lookInput.pitch = 0;
+    } else {
+      yaw.current = camera.rotation.y;
+      pitch.current = camera.rotation.x;
+    }
+
     const fwd = new THREE.Vector3();
     camera.getWorldDirection(fwd);
     fwd.y = 0;
@@ -393,10 +426,16 @@ function FPSController({ heightAt, enabled }: { heightAt: Map<string, number>; e
     const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
 
     velocity.current.set(0, 0, 0);
+    // Keyboard input
     if (keys.current['KeyW'] || keys.current['ArrowUp']) velocity.current.add(fwd);
     if (keys.current['KeyS'] || keys.current['ArrowDown']) velocity.current.sub(fwd);
     if (keys.current['KeyA'] || keys.current['ArrowLeft']) velocity.current.sub(right);
     if (keys.current['KeyD'] || keys.current['ArrowRight']) velocity.current.add(right);
+    // Touch joystick input: y-negative = forward
+    if (Math.abs(moveInput.x) > 0.05 || Math.abs(moveInput.y) > 0.05) {
+      velocity.current.add(fwd.clone().multiplyScalar(-moveInput.y));
+      velocity.current.add(right.clone().multiplyScalar(moveInput.x));
+    }
     if (velocity.current.lengthSq() > 0) {
       velocity.current.normalize().multiplyScalar(speed * delta);
       camera.position.x += velocity.current.x;
@@ -466,6 +505,44 @@ interface Props {
 export function ExplorationView({ world, npcs, onExit }: Props) {
   const [mode, setMode] = useState<CamMode>('orbit');
   const [locked, setLocked] = useState(false);
+  const isTouch = useMemo(() => isTouchDevice(), []);
+
+  // Touch look: track single-finger drag outside the joystick area and
+  // translate its delta into yaw/pitch in lookInput. Per-frame consumed
+  // in FPSController.
+  const lookTouchRef = useRef<{ id: number; x: number; y: number } | null>(null);
+  const onTouchStartCanvas = (e: React.TouchEvent) => {
+    if (mode !== 'fps') return;
+    const t = e.changedTouches[0];
+    // Ignore touches inside the joystick area (bottom-left 200x200)
+    if (t.clientX < 200 && t.clientY > window.innerHeight - 200) return;
+    lookTouchRef.current = { id: t.identifier, x: t.clientX, y: t.clientY };
+    if (!locked) setLocked(true);
+  };
+  const onTouchMoveCanvas = (e: React.TouchEvent) => {
+    if (!lookTouchRef.current) return;
+    for (const t of Array.from(e.changedTouches)) {
+      if (t.identifier === lookTouchRef.current.id) {
+        const dx = t.clientX - lookTouchRef.current.x;
+        const dy = t.clientY - lookTouchRef.current.y;
+        lookInput.yaw = dx * 0.005;
+        lookInput.pitch = dy * 0.005;
+        lookTouchRef.current.x = t.clientX;
+        lookTouchRef.current.y = t.clientY;
+        e.preventDefault();
+        return;
+      }
+    }
+  };
+  const onTouchEndCanvas = (e: React.TouchEvent) => {
+    if (!lookTouchRef.current) return;
+    for (const t of Array.from(e.changedTouches)) {
+      if (t.identifier === lookTouchRef.current.id) {
+        lookTouchRef.current = null;
+        return;
+      }
+    }
+  };
 
   const eventsQuery = useEvents();
   const firstSeenRef = useRef<Map<number, number>>(new Map());
@@ -542,9 +619,11 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           <div className="hud-help">
             {mode === 'orbit'
               ? 'drag to orbit · scroll to zoom · right-drag to pan'
-              : locked
-                ? 'WASD to move · shift to sprint · Esc to orbit'
-                : 'click canvas to lock pointer + move'}
+              : isTouch
+                ? 'joystick to move · drag to look · tap Orbit to exit'
+                : locked
+                  ? 'WASD to move · shift to sprint · Esc to orbit'
+                  : 'click canvas to lock pointer + move'}
           </div>
           <button className="mode-toggle" onClick={toggleMode}>
             {mode === 'orbit' ? 'Walk Mode' : 'Orbit Mode'}
@@ -557,10 +636,13 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
       <Canvas
         shadows
         camera={{ position: [GRID_W * 0.4, GRID_H * 0.6, GRID_H * 0.9], fov: 65 }}
-        style={{ background: '#081422' }}
+        style={{ background: '#081422', touchAction: mode === 'fps' ? 'none' : 'auto' }}
         onClick={() => {
-          if (mode === 'fps' && !locked) setLocked(true);
+          if (mode === 'fps' && !isTouch && !locked) setLocked(true);
         }}
+        onTouchStart={onTouchStartCanvas}
+        onTouchMove={onTouchMoveCanvas}
+        onTouchEnd={onTouchEndCanvas}
       >
         <Sky
           sunPosition={[100, 60, 50]}
@@ -599,8 +681,8 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           />
         ) : (
           <>
-            <FPSController heightAt={heightAt} enabled={locked} />
-            {locked && (
+            <FPSController heightAt={heightAt} enabled={mode === 'fps' && (isTouch || locked)} />
+            {locked && !isTouch && (
               <PointerLockControls
                 onLock={() => setLocked(true)}
                 onUnlock={() => setLocked(false)}
@@ -609,6 +691,14 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           </>
         )}
       </Canvas>
+      {mode === 'fps' && isTouch && (
+        <VirtualJoystick
+          onChange={(x, y) => {
+            moveInput.x = x;
+            moveInput.y = y;
+          }}
+        />
+      )}
     </div>
   );
 }

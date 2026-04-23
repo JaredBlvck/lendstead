@@ -265,6 +265,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   filter: brightness(1.1);
 }
 
+.virtual-joystick {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  border-radius: 50%;
+  background: rgba(11, 14, 20, 0.55);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  z-index: 20;
+  touch-action: none;
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.virtual-joystick-knob {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(94, 234, 212, 0.85);
+  border: 2px solid rgba(11, 14, 20, 0.5);
+  transition: transform 0.04s linear;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .exploration-hud {
+    padding: 8px 10px;
+  }
+  .hud-title { font-size: 14px; }
+  .hud-sub { font-size: 10px; }
+  .hud-help { display: none; }
+  .mode-toggle, .hud-exit {
+    padding: 6px 10px;
+    font-size: 11px;
+  }
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
