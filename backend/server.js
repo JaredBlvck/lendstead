@@ -272,11 +272,21 @@ async function runCycleAdvance() {
     );
 
     // Roll weather/discovery/threat events; persist each.
+    // Dry-streak = number of committed cycles since the last non-cycle_advance
+    // event. Self-corrects prolonged droughts via a probability boost.
     const terrain = updated.rows[0].terrain || [];
+    const streakRow = await client.query(
+      `SELECT COALESCE(MAX(cycle), 0) AS last_evt_cycle
+         FROM events
+        WHERE kind IN ('storm','discovery','threat_sighted')`,
+    );
+    const lastEventCycle = Number(streakRow.rows[0].last_evt_cycle) || 0;
+    const dry_streak = Math.max(0, nextCycle - 1 - lastEventCycle);
     const rolled = rollEvents({
       cycle: nextCycle,
       npcs: aliveNpcs,
       terrain,
+      dry_streak,
     });
     const persistedRolled = [];
     for (const evt of rolled) {

@@ -218,14 +218,18 @@ export function jitterPosition(npc) {
 }
 
 // Roll weather/discovery/threat events for a cycle. Each has a configurable
-// chance; they emit payloads compatible with the frontend's event simulator
-// (affected_tiles[] or affected_npc_ids[]).
-export function rollEvents({ cycle, npcs, terrain }) {
+// chance; payloads match the frontend's overlay shape (center / tile /
+// affected_tiles[] / affected_npc_ids[]).
+//
+// `dry_streak` is the number of consecutive prior cycles that rolled no
+// storm/discovery/threat. Adds a linear boost capped at +0.30 to each
+// probability so prolonged droughts self-correct instead of stacking.
+export function rollEvents({ cycle, npcs, terrain, dry_streak = 0 }) {
   const events = [];
+  const streakBoost = Math.min(0.3, dry_streak * 0.06);
 
-  // STORM — 18% base chance, more likely with larger populations (crowded
-  // settlements are easier targets fictionally).
-  if (Math.random() < 0.18 + Math.min(0.15, npcs.length / 200)) {
+  // STORM — 20% base + pop crowding (cap 15%) + streak boost.
+  if (Math.random() < 0.2 + Math.min(0.15, npcs.length / 200) + streakBoost) {
     const center =
       pickTile(terrain, (t) => t.type === "water" || t.type === "beach") ||
       pickTile(terrain, () => true);
@@ -245,11 +249,12 @@ export function rollEvents({ cycle, npcs, terrain }) {
     });
   }
 
-  // DISCOVERY — 22% base, scouts/prospectors alive → boost.
+  // DISCOVERY — 26% base + scouts/prospectors alive (cap 25%) + streak boost.
   const perimeter = npcs.filter(
     (n) => n.alive && positionClass(n.role) === "perimeter",
   );
-  const discoveryChance = 0.22 + Math.min(0.25, perimeter.length * 0.04);
+  const discoveryChance =
+    0.26 + Math.min(0.25, perimeter.length * 0.04) + streakBoost;
   if (Math.random() < discoveryChance) {
     const tile =
       pickTile(terrain, (t) => t.type === "mountain" || t.type === "forest") ||
@@ -272,8 +277,9 @@ export function rollEvents({ cycle, npcs, terrain }) {
     });
   }
 
-  // THREAT_SIGHTED — 14% base, more likely if perimeter is thin or sparse.
-  const threatChance = 0.14 + Math.max(0, (8 - perimeter.length) * 0.02);
+  // THREAT_SIGHTED — 16% base + thin-perimeter penalty + streak boost.
+  const threatChance =
+    0.16 + Math.max(0, (8 - perimeter.length) * 0.02) + streakBoost;
   if (Math.random() < threatChance) {
     const tile =
       pickTile(terrain, (t) => t.type === "forest" || t.type === "mountain") ||
