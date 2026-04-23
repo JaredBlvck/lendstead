@@ -245,7 +245,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--text-dim);
   backdrop-filter: blur(8px);
 }
-.hud-exit {
+.hud-exit,
+.mode-toggle {
   background: rgba(11, 14, 20, 0.85);
   color: var(--text);
   border: 1px solid var(--border);
@@ -254,9 +255,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-weight: 600;
   border-radius: 8px;
 }
-.hud-exit:hover {
-  background: var(--panel-2);
-  filter: none;
+.mode-toggle {
+  background: linear-gradient(135deg, #818cf8 0%, #5eead4 100%);
+  color: #0b0e14;
+  border: 0;
+}
+.hud-exit:hover,
+.mode-toggle:hover {
+  filter: brightness(1.1);
 }
 
 .card {
