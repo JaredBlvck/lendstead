@@ -19,9 +19,62 @@ import {
   drawTree,
   drawRock,
   drawStructure,
+  drawBird,
+  hash2,
   tileAssetsSeed,
+  posefromStatus,
 } from '../lib/sprites';
 import { computeProtectedTiles } from '../lib/pressure';
+
+// Ambient bird path. Birds spawn at left edge, fly rightward along a
+// sine-wave curve, and despawn off the right edge. Deterministic from
+// spawn time - no state, just compute position from (now, startedAt).
+interface BirdPath {
+  id: number;
+  startedAt: number;
+  durationMs: number;
+  startY: number;
+  endY: number;
+  amplitude: number;
+}
+
+function activeBirds(now: number, seed: number): BirdPath[] {
+  const BIRD_INTERVAL_MS = 12000;
+  const BIRD_DURATION_MS = 18000;
+  const birds: BirdPath[] = [];
+  // Check the previous 3 spawn windows so we render any birds still in flight.
+  for (let i = -2; i <= 0; i++) {
+    const windowStart = Math.floor((now + i * BIRD_INTERVAL_MS) / BIRD_INTERVAL_MS) * BIRD_INTERVAL_MS;
+    const windowSeed = windowStart ^ seed;
+    const r1 = hash2(windowSeed, 1);
+    const r2 = hash2(windowSeed, 2);
+    const r3 = hash2(windowSeed, 3);
+    if (r1 < 0.75) {
+      birds.push({
+        id: windowStart,
+        startedAt: windowStart,
+        durationMs: BIRD_DURATION_MS * (0.8 + r2 * 0.4),
+        startY: r2 * GRID_H * 0.7,
+        endY: r3 * GRID_H * 0.7 + GRID_H * 0.1,
+        amplitude: 1.2 + r3 * 1.5,
+      });
+    }
+  }
+  return birds.filter((b) => now - b.startedAt < b.durationMs);
+}
+
+// Shade a base hex color by a lightness delta in [-1, 1].
+function tintColor(hex: string, delta: number): string {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const shift = (c: number) => {
+    const adjusted = delta > 0 ? c + (255 - c) * delta : c * (1 + delta);
+    return Math.max(0, Math.min(255, Math.round(adjusted)));
+  };
+  return `rgb(${shift(r)},${shift(g)},${shift(b)})`;
+}
 
 interface Props {
   world: World;
@@ -210,16 +263,38 @@ export function GameMap({ world, npcs }: Props) {
       for (const tile of tiles) {
         if (tile.x < minTX || tile.x > maxTX || tile.y < minTY || tile.y > maxTY) continue;
         const { sx, sy } = worldToScreen(tile.x, tile.y);
-        ctx.fillStyle = TILE_COLORS[tile.type];
+        // Per-tile color noise - small lightness jitter per (x,y) hash so
+        // tiles of the same type don't look uniform.
+        const noise = (hash2(tile.x, tile.y) - 0.5) * 0.12;
+        ctx.fillStyle = tintColor(TILE_COLORS[tile.type], noise);
         ctx.fillRect(sx, sy, TS + 0.5, TS + 0.5);
 
         if (tile.type !== 'water') {
-          const shade = Math.min(0.25, Math.max(0, tile.height - 0.3) * 0.6);
+          // Beefier height shading for depth (v5.0 directive)
+          const shade = Math.min(0.38, Math.max(0, tile.height - 0.25) * 0.9);
           ctx.fillStyle = `rgba(255,255,255,${shade})`;
           ctx.fillRect(sx, sy, TS + 0.5, TS + 0.5);
+          // Small grass patch / sand fleck per tile
+          if (hash2(tile.x + 3, tile.y - 1) < 0.35) {
+            const patchSeed = hash2(tile.x * 11, tile.y * 13);
+            const px = sx + patchSeed * (TS - 2);
+            const py = sy + hash2(tile.y * 11, tile.x * 13) * (TS - 2);
+            if (tile.type === 'plains')
+              ctx.fillStyle = 'rgba(80,110,50,0.35)';
+            else if (tile.type === 'forest')
+              ctx.fillStyle = 'rgba(40,65,30,0.35)';
+            else if (tile.type === 'beach')
+              ctx.fillStyle = 'rgba(230,200,140,0.4)';
+            else if (tile.type === 'mountain')
+              ctx.fillStyle = 'rgba(100,100,110,0.35)';
+            else ctx.fillStyle = 'rgba(0,0,0,0)';
+            ctx.fillRect(px, py, Math.max(1, TS * 0.12), Math.max(1, TS * 0.12));
+          }
         } else {
-          const ripple = 0.04 + 0.03 * Math.sin(now / 800 + tile.x * 0.4 + tile.y * 0.5);
-          ctx.fillStyle = `rgba(94,234,212,${ripple})`;
+          // Enhanced water animation - larger amplitude ripple + secondary wave
+          const ripple = 0.05 + 0.04 * Math.sin(now / 700 + tile.x * 0.4 + tile.y * 0.5);
+          const secondary = 0.02 * Math.sin(now / 1400 + tile.x * 0.2 - tile.y * 0.3);
+          ctx.fillStyle = `rgba(94,234,212,${ripple + secondary})`;
           ctx.fillRect(sx, sy, TS + 0.5, TS + 0.5);
         }
       }
@@ -244,7 +319,7 @@ export function GameMap({ world, npcs }: Props) {
           const { sx, sy } = worldToScreen(tile.x + 0.5, tile.y + 0.5);
           if (tile.type === 'forest') {
             for (const asset of tileAssetsSeed(tile.x, tile.y, 0.9)) {
-              drawTree(ctx, sx + asset.ox * TS, sy + asset.oy * TS, TS, asset.seed);
+              drawTree(ctx, sx + asset.ox * TS, sy + asset.oy * TS, TS, asset.seed, now);
             }
           } else if (tile.type === 'mountain') {
             for (const asset of tileAssetsSeed(tile.x, tile.y, 0.7)) {
@@ -308,10 +383,10 @@ export function GameMap({ world, npcs }: Props) {
         }
       }
 
-      // Structures
+      // Structures (animated: fire glow, smoke plumes, water ripple)
       for (const s of structures) {
         const { sx, sy } = worldToScreen(s.x, s.y);
-        drawStructure(ctx, sx, sy, TS, s.key, cam.zoom >= 1.1 ? s.label : undefined);
+        drawStructure(ctx, sx, sy, TS, s.key, now, cam.zoom >= 1.1 ? s.label : undefined);
       }
 
       // NPC avatars (depth-sorted by y so closer sprites overlap correctly)
@@ -335,6 +410,7 @@ export function GameMap({ world, npcs }: Props) {
           archetype: classify(npc.role),
           facing: ent.facing,
           phase: ent.phase,
+          pose: posefromStatus(npc.status || '', ent.moving),
           highlighted,
           condition: npc.condition,
           moraleLow: npc.morale === 'low',
@@ -422,6 +498,43 @@ export function GameMap({ world, npcs }: Props) {
         ctx.fillText(prefix + e.label, sx + 10, sy - 4);
       }
 
+      // Ambient birds (drawn before lighting so they sit in the scene)
+      const birds = activeBirds(now, Math.floor(world.civ_name.charCodeAt(0) * 100) || 1);
+      for (const bird of birds) {
+        const t = (now - bird.startedAt) / bird.durationMs;
+        if (t < 0 || t > 1) continue;
+        const worldX = -2 + (GRID_W + 4) * t;
+        const worldY =
+          bird.startY + (bird.endY - bird.startY) * t + Math.sin(t * Math.PI * 2) * bird.amplitude;
+        const { sx, sy } = worldToScreen(worldX, worldY);
+        const birdSize = Math.max(4, TS * 0.3);
+        const wingPhase = (now / 280) % 1;
+        drawBird(ctx, sx, sy, birdSize, wingPhase);
+      }
+
+      // Directional lighting pass: dim lower-right half so island reads
+      // as "lit from top-left". Applied as a screen-space gradient so it
+      // stays consistent under camera moves.
+      {
+        const lightGrad = ctx.createLinearGradient(0, 0, size.w, size.h);
+        lightGrad.addColorStop(0, 'rgba(10,14,26,0)');
+        lightGrad.addColorStop(1, 'rgba(10,14,26,0.32)');
+        ctx.fillStyle = lightGrad;
+        ctx.fillRect(0, 0, size.w, size.h);
+      }
+
+      // Vignette: radial darkening from center outward
+      {
+        const cx = size.w / 2;
+        const cy = size.h / 2;
+        const rMax = Math.sqrt(cx * cx + cy * cy);
+        const vig = ctx.createRadialGradient(cx, cy, rMax * 0.5, cx, cy, rMax);
+        vig.addColorStop(0, 'rgba(0,0,0,0)');
+        vig.addColorStop(1, 'rgba(0,0,0,0.42)');
+        ctx.fillStyle = vig;
+        ctx.fillRect(0, 0, size.w, size.h);
+      }
+
       // Hover tile outline + readout (fixed-position, independent of camera)
       if (hoverTile) {
         const t = tileAt(tiles, hoverTile.x, hoverTile.y);
@@ -449,7 +562,7 @@ export function GameMap({ world, npcs }: Props) {
     return () => cancelAnimationFrame(raf);
   }, [
     tiles, size, entities, npcs, displayEvents, hoverTile, world.infrastructure,
-    cam, structures, focusedNPCId,
+    world.civ_name, cam, structures, focusedNPCId, protectedTiles,
   ]);
 
   // Screen->tile converter for input handlers
