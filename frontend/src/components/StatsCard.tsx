@@ -112,7 +112,7 @@ export function StatsCard({ world }: Props) {
         <div className="empty-hint">None tracked</div>
       ) : (
         Object.entries(world.resources)
-          .filter(([k]) => !/_balance$|_production$|_consumption$|_surplus_days$/.test(k))
+          .filter(([k]) => !/_balance$|_production$|_consumption$|_surplus_days$|_deficit_days$/.test(k))
           .map(([k, v]) => (
             <div className={`kv ${resourceChanges.has(k) ? 'flash' : ''}`} key={k}>
               <span className="k">{k}</span>

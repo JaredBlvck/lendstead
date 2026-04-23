@@ -451,13 +451,25 @@ export function computeResourceBalance({
   infrastructure,
   prevBalance = {},
 }) {
+  // IMPORTANT: consumption counts ALL alive NPCs regardless of condition —
+  // injured and incapacitated still eat and drink. Production comes only from
+  // healthy + (at reduced rate) injured workers. Earlier bug caused food/water
+  // to appear "surplus" after cascading injuries, masking the real crisis.
   const pop = alive.length;
+  const working = alive.filter(
+    (n) => n.condition === "healthy" || n.condition === "injured",
+  );
+  const workerMultiplier = (n) => (n.condition === "injured" ? 0.5 : 1.0);
   const tokens = infrastructureTokens(infrastructure || {});
 
   const foragerRx = /forager|fisher|gatherer|trader|shore|tide|hunter/i;
   const fieldRx = /field|planner|farmer|ag[_-]?prep/i;
-  const producers = alive.filter((n) => foragerRx.test(n.role)).length;
-  const fieldWorkers = alive.filter((n) => fieldRx.test(n.role)).length;
+  const producers = working
+    .filter((n) => foragerRx.test(n.role))
+    .reduce((s, n) => s + workerMultiplier(n), 0);
+  const fieldWorkers = working
+    .filter((n) => fieldRx.test(n.role))
+    .reduce((s, n) => s + workerMultiplier(n), 0);
 
   // Count distinct structure-matching tokens. Token list is pre-de-duped
   // inside the regex match (structure name OR description both count once).
@@ -481,13 +493,25 @@ export function computeResourceBalance({
   const hasMetalTier = tokens.some((t) =>
     /metal[_-]?tier|tool[_-]?progression/i.test(t),
   );
-  const metalBonus = hasMetalTier ? 5 : 0; // metal hoe/axe throughput boost
+  const metalBonus = hasMetalTier ? 5 : 0;
+  const fishingFleetCount = Math.min(
+    3,
+    matchCount(/fishing[_-]?fleet|fishing[_-]?boats?|trawl/i),
+  );
+  const agInfraCount = Math.min(
+    4,
+    matchCount(
+      /irrigation|plow|nursery|tool[_-]?shed|ag[_-]?field|seed[_-]?bank/i,
+    ),
+  );
   const food_production = Number(
     (
       producers * 1.8 +
       fieldWorkers * 3.0 +
       granaryCount * 1.0 +
       dryingRackCount * 1.5 +
+      fishingFleetCount * 4.0 +
+      agInfraCount * 2.0 +
       metalBonus
     ).toFixed(2),
   );

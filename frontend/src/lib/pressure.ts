@@ -1,10 +1,10 @@
 // Resource pressure + zone risk helpers.
 //
-// Both systems are backend-driven when the v4 consequence engine lands.
-// Until then, these helpers return null so UI can render graceful
-// fallbacks. Once backend populates world.resources.food_balance /
-// water_balance (or equivalent), the helpers surface the numbers
-// cleanly.
+// Backend ships: food_production, food_consumption, food_balance (flat
+// number = prod - cons), food_deficit_days (counter, ticks when
+// balance < 0; Jr's naming, not "surplus_days"). Same for water.
+// Helpers normalize to a unified ResourceBalance so the UI renders
+// off one shape regardless of which keys the backend prefers.
 
 import type { World, ResourceBalance } from '../types';
 
@@ -12,27 +12,45 @@ export function extractBalance(
   resources: Record<string, unknown>,
   prefix: 'food' | 'water',
 ): ResourceBalance | null {
-  const key = `${prefix}_balance`;
-  const raw = resources[key];
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const obj = raw as Record<string, unknown>;
+  // Object-shape preferred: { production, consumption, surplus_days | deficit_days }
+  const rawObj = resources[`${prefix}_balance`];
+  if (rawObj && typeof rawObj === 'object' && !Array.isArray(rawObj)) {
+    const obj = rawObj as Record<string, unknown>;
     if (
       typeof obj.production === 'number' &&
-      typeof obj.consumption === 'number' &&
-      typeof obj.surplus_days === 'number'
+      typeof obj.consumption === 'number'
     ) {
+      const days =
+        typeof obj.surplus_days === 'number'
+          ? obj.surplus_days
+          : typeof obj.deficit_days === 'number'
+            ? -obj.deficit_days
+            : 0;
       return {
         production: obj.production,
         consumption: obj.consumption,
-        surplus_days: obj.surplus_days,
+        surplus_days: days,
       };
     }
   }
-  // Flat fields: food_production + food_consumption + food_surplus_days
+
+  // Flat-shape: separate keys. Accept either surplus_days or deficit_days.
   const prod = resources[`${prefix}_production`];
   const cons = resources[`${prefix}_consumption`];
-  const days = resources[`${prefix}_surplus_days`];
-  if (typeof prod === 'number' && typeof cons === 'number' && typeof days === 'number') {
+  const balanceFlat = resources[`${prefix}_balance`]; // flat number when not object
+  const surplusDays = resources[`${prefix}_surplus_days`];
+  const deficitDays = resources[`${prefix}_deficit_days`];
+
+  if (typeof prod === 'number' && typeof cons === 'number') {
+    let days: number;
+    if (typeof surplusDays === 'number') days = surplusDays;
+    else if (typeof deficitDays === 'number') days = -deficitDays;
+    else if (typeof balanceFlat === 'number') {
+      // Fallback: approximate surplus days from balance magnitude
+      days = balanceFlat >= 0 ? 10 : -10;
+    } else {
+      days = 0;
+    }
     return { production: prod, consumption: cons, surplus_days: days };
   }
   return null;
@@ -53,9 +71,7 @@ export function readPressure(world: World): Pressure {
 
 // Zone-risk coverage: a tile is PROTECTED if it's within `coverRadius`
 // of any infrastructure key matching palisade / shelter / watch_post /
-// outpost. Returns a quick Set<"x,y"> for fast lookup in the renderer.
-// Structures keyed by infrastructure name are approximated to the same
-// positions used in GameMap layoutStructures().
+// outpost. Returns a Set<"x,y"> for fast lookup in the renderer.
 export function computeProtectedTiles(
   infra: Record<string, unknown>,
   coverRadius: number,
@@ -69,8 +85,6 @@ export function computeProtectedTiles(
   );
   if (coverKeys.length === 0) return out;
 
-  // Approximate structure positions: mirror the heuristics in
-  // layoutStructures(). Keep in sync.
   const anchors: Array<[number, number]> = [];
   for (const key of coverKeys) {
     if (/palisade|storm_shelter/i.test(key) && !/nw|ember|e_coast|w_coast/i.test(key))

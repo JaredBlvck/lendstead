@@ -405,6 +405,86 @@ async function runCycleAdvance() {
       }
     }
 
+    // ---- Recovery: when the civ has food + water surplus AND medical
+    // infrastructure, incapacitated → injured → healthy over cycles. Without
+    // this, injuries accumulate forever and any crisis becomes unrecoverable.
+    const recoveries = [];
+    if (balance.food_balance >= 0 && balance.water_balance >= 0) {
+      const infraTokens = JSON.stringify(current.infrastructure || {});
+      const medicalCount = (
+        infraTokens.match(/medical|med[_-]?tent|healer|infirmary/gi) || []
+      ).length;
+      const healerAlive = aliveNpcs.some(
+        (n) => n.condition !== "dead" && /healer|medic|infirmary/i.test(n.role),
+      );
+      const healsThisCycle =
+        medicalCount > 0 ? (healerAlive ? 3 : 2) : healerAlive ? 1 : 0;
+
+      const incap = aliveNpcs
+        .filter((n) => n.condition === "incapacitated")
+        .sort(
+          (a, b) =>
+            (a.last_condition_change || 0) - (b.last_condition_change || 0),
+        );
+      const injured = aliveNpcs
+        .filter((n) => n.condition === "injured")
+        .sort((a, b) => (a.injury_cycle || 0) - (b.injury_cycle || 0));
+
+      let remaining = healsThisCycle;
+      for (const n of incap) {
+        if (remaining <= 0) break;
+        await client.query(
+          `UPDATE npcs SET condition = 'injured', last_condition_change = $1 WHERE id = $2`,
+          [nextCycle, n.id],
+        );
+        n.condition = "injured";
+        recoveries.push({
+          id: n.id,
+          name: n.name,
+          from: "incapacitated",
+          to: "injured",
+        });
+        remaining--;
+      }
+      for (const n of injured) {
+        if (remaining <= 0) break;
+        await client.query(
+          `UPDATE npcs SET condition = 'healthy', injury_cycle = NULL,
+                           last_condition_change = $1 WHERE id = $2`,
+          [nextCycle, n.id],
+        );
+        n.condition = "healthy";
+        recoveries.push({
+          id: n.id,
+          name: n.name,
+          from: "injured",
+          to: "healthy",
+        });
+        remaining--;
+      }
+
+      // Morale slow-recovery: when surplus has held 3+ cycles, random low→med.
+      if (
+        (balance.food_deficit_days || 0) === 0 &&
+        (balance.water_deficit_days || 0) === 0
+      ) {
+        const lowMorale = aliveNpcs
+          .filter((n) => n.morale === "low" && n.condition !== "dead")
+          .slice(0, 2);
+        for (const n of lowMorale) {
+          await client.query("UPDATE npcs SET morale = 'med' WHERE id = $1", [
+            n.id,
+          ]);
+          recoveries.push({
+            id: n.id,
+            name: n.name,
+            morale_from: "low",
+            morale_to: "med",
+          });
+        }
+      }
+    }
+
     // ---- Update world + count alive ----
     const { rows: aliveRecount } = await client.query(
       "SELECT COUNT(*)::int AS n FROM npcs WHERE alive = true AND condition != 'dead'",
