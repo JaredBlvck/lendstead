@@ -21,6 +21,7 @@ import {
   drawStructure,
   tileAssetsSeed,
 } from '../lib/sprites';
+import { computeProtectedTiles } from '../lib/pressure';
 
 interface Props {
   world: World;
@@ -123,6 +124,17 @@ export function GameMap({ world, npcs }: Props) {
     [world.infrastructure],
   );
 
+  const protectedTiles = useMemo(
+    () =>
+      computeProtectedTiles(
+        world.infrastructure as unknown as Record<string, unknown>,
+        5,
+        GRID_W,
+        GRID_H,
+      ),
+    [world.infrastructure],
+  );
+
   // Resize observer
   useEffect(() => {
     const el = containerRef.current;
@@ -212,6 +224,19 @@ export function GameMap({ world, npcs }: Props) {
         }
       }
 
+      // Zone risk overlay: unprotected land tiles get a faint red wash
+      // that scales with distance from claimed zones. Water excluded.
+      if (protectedTiles.size > 0) {
+        for (const tile of tiles) {
+          if (tile.type === 'water') continue;
+          if (tile.x < minTX || tile.x > maxTX || tile.y < minTY || tile.y > maxTY) continue;
+          if (protectedTiles.has(`${tile.x},${tile.y}`)) continue;
+          const { sx, sy } = worldToScreen(tile.x, tile.y);
+          ctx.fillStyle = 'rgba(239,68,68,0.08)';
+          ctx.fillRect(sx, sy, TS + 0.5, TS + 0.5);
+        }
+      }
+
       // Environmental assets (trees, rocks) - culled + density-limited
       if (cam.zoom >= 0.8) {
         for (const tile of tiles) {
@@ -295,10 +320,12 @@ export function GameMap({ world, npcs }: Props) {
       );
       for (const [id, ent] of sortedEntities) {
         const npc = npcs.find((n) => n.id === id);
-        if (!npc || !npc.alive) continue;
+        if (!npc) continue;
+        // Dead NPCs still render as a faint marker for 1-2 cycles, then backend drops alive=false
+        const isDead = npc.condition === 'dead';
+        if (!npc.alive && !isDead) continue;
         const { sx, sy } = worldToScreen(ent.x + 0.5, ent.y + 0.5);
-        const highlighted =
-          npc.skill >= 6 || focusedNPCId === id;
+        const highlighted = npc.skill >= 6 || focusedNPCId === id;
         drawAvatar({
           ctx,
           x: sx,
@@ -309,6 +336,8 @@ export function GameMap({ world, npcs }: Props) {
           facing: ent.facing,
           phase: ent.phase,
           highlighted,
+          condition: npc.condition,
+          moraleLow: npc.morale === 'low',
         });
 
         // NPC name label when zoomed in
@@ -358,30 +387,39 @@ export function GameMap({ world, npcs }: Props) {
       ctx.textAlign = 'center';
       ctx.fillText('Jr', pos2.sx, pos2.sy - TS * 0.9);
 
-      // Discovery + threat pings above everything
+      // Discovery + threat pings above everything. Severity drives ring
+      // width, pulse rate, and label accent.
       for (const e of displayEvents) {
         if (e.kind === 'storm') continue;
         const life = Math.min(1, (now - e.seenAt) / e.lifespanMs);
-        const pulse = 0.5 + 0.5 * Math.sin(now / 200);
+        const pulseRate = e.severity === 'critical' ? 120 : e.severity === 'minor' ? 300 : 200;
+        const pulse = 0.5 + 0.5 * Math.sin(now / pulseRate);
         const { sx, sy } = worldToScreen(e.x + 0.5, e.y + 0.5);
-        const ringRadius = TS * (1.2 + life * 2.5);
+        const sevMul = e.severity === 'critical' ? 1.4 : e.severity === 'minor' ? 0.75 : 1;
+        const ringRadius = TS * (1.2 + life * 2.5) * sevMul;
         const color = e.kind === 'discovery' ? '94,234,212' : '239,68,68';
-        ctx.strokeStyle = `rgba(${color},${(1 - life) * 0.9})`;
-        ctx.lineWidth = 2;
+        const ringAlpha = (1 - life) * (e.severity === 'critical' ? 1.0 : 0.9);
+        const ringWidth = e.severity === 'critical' ? 3 : e.severity === 'minor' ? 1.5 : 2;
+        ctx.strokeStyle = `rgba(${color},${ringAlpha})`;
+        ctx.lineWidth = ringWidth;
         ctx.beginPath();
         ctx.arc(sx, sy, ringRadius, 0, Math.PI * 2);
         ctx.stroke();
         ctx.fillStyle = `rgba(${color},${0.6 + 0.4 * pulse})`;
-        if (e.kind === 'discovery') drawStarPath(ctx, sx, sy, TS * 0.4, 5);
+        if (e.kind === 'discovery') drawStarPath(ctx, sx, sy, TS * 0.4 * sevMul, 5);
         else {
           ctx.beginPath();
-          ctx.arc(sx, sy, TS * 0.25, 0, Math.PI * 2);
+          ctx.arc(sx, sy, TS * 0.25 * sevMul, 0, Math.PI * 2);
           ctx.fill();
         }
         ctx.fillStyle = `rgba(230,237,243,${(1 - life) * 0.9})`;
-        ctx.font = '11px ui-sans-serif, system-ui';
+        ctx.font =
+          e.severity === 'critical'
+            ? 'bold 12px ui-sans-serif, system-ui'
+            : '11px ui-sans-serif, system-ui';
         ctx.textAlign = 'left';
-        ctx.fillText(e.label, sx + 10, sy - 4);
+        const prefix = e.severity === 'critical' ? '[!] ' : '';
+        ctx.fillText(prefix + e.label, sx + 10, sy - 4);
       }
 
       // Hover tile outline + readout (fixed-position, independent of camera)

@@ -29,21 +29,55 @@ interface DrawOpts {
   phase: number;       // 0..1 breathing phase
   highlighted?: boolean;
   leader?: boolean;
+  condition?: 'healthy' | 'injured' | 'incapacitated' | 'dead';
+  moraleLow?: boolean;
 }
 
 // Primary humanoid draw. Head + torso + legs + tool hint. Phase-animated
 // so stationary sprites look alive.
 export function drawAvatar(opts: DrawOpts) {
-  const { ctx, x, y, size, lane, archetype, facing, phase, highlighted, leader } = opts;
+  const {
+    ctx, x, y, size, lane, archetype, facing, phase, highlighted, leader,
+    condition = 'healthy', moraleLow,
+  } = opts;
+
+  // Dead: render as faint marker, no body
+  if (condition === 'dead') {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = 'rgba(150,150,150,0.45)';
+    ctx.lineWidth = 1;
+    const r = size * 0.22;
+    ctx.beginPath();
+    ctx.moveTo(-r, -r);
+    ctx.lineTo(r, r);
+    ctx.moveTo(r, -r);
+    ctx.lineTo(-r, r);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
 
   const scale = leader ? 1.4 : 1.0;
   const headR = size * 0.18 * scale;
   const torsoH = size * 0.38 * scale;
   const torsoW = torsoArchetypeWidth(archetype) * size * scale;
-  const breath = Math.sin(phase * Math.PI * 2) * (size * 0.02);
 
-  const fillColor = lane === 'sr' ? '#fb923c' : '#38bdf8';
-  const accent = lane === 'sr' ? '#fdba74' : '#7dd3fc';
+  // Injured sprites breathe slower and more shallowly; incapacitated don't animate
+  const breathAmp =
+    condition === 'incapacitated' ? 0 : condition === 'injured' ? size * 0.01 : size * 0.02;
+  const breath = Math.sin(phase * Math.PI * 2) * breathAmp;
+
+  let fillColor = lane === 'sr' ? '#fb923c' : '#38bdf8';
+  let accent = lane === 'sr' ? '#fdba74' : '#7dd3fc';
+  if (moraleLow) {
+    fillColor = lane === 'sr' ? '#b97340' : '#5089a6';
+    accent = lane === 'sr' ? '#b97340' : '#5089a6';
+  }
+  if (condition === 'injured' || condition === 'incapacitated') {
+    fillColor = mixWithGray(fillColor, 0.55);
+    accent = mixWithGray(accent, 0.55);
+  }
 
   ctx.save();
   ctx.translate(x, y + breath);
@@ -117,7 +151,41 @@ export function drawAvatar(opts: DrawOpts) {
   // Tool / archetype hint
   drawToolHint(ctx, archetype, size * scale, facing);
 
+  // Injury X mark
+  if (condition === 'injured' || condition === 'incapacitated') {
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth = 1.4;
+    const r = size * 0.12 * scale;
+    const cx = torsoW / 2 - r * 0.3;
+    const cy = -torsoH / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy - r);
+    ctx.lineTo(cx + r, cy + r);
+    ctx.moveTo(cx + r, cy - r);
+    ctx.lineTo(cx - r, cy + r);
+    ctx.stroke();
+  }
+  if (condition === 'incapacitated') {
+    // Bedroll line under the torso
+    ctx.fillStyle = 'rgba(200,180,140,0.4)';
+    ctx.fillRect(-torsoW * 0.7, torsoH / 2 + size * 0.06, torsoW * 1.4, size * 0.06);
+  }
+
   ctx.restore();
+}
+
+function mixWithGray(color: string, grayWeight: number): string {
+  // Mix hex color with neutral gray #7a7a7a
+  const target = [0x7a, 0x7a, 0x7a];
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const mix = (c: number, t: number) => Math.round(c * (1 - grayWeight) + t * grayWeight);
+  const rr = mix(r, target[0]);
+  const gg = mix(g, target[1]);
+  const bb = mix(b, target[2]);
+  return `rgb(${rr},${gg},${bb})`;
 }
 
 function torsoArchetypeWidth(a: Archetype): number {

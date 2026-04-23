@@ -319,3 +319,258 @@ function terrainWithin(terrain, center, radius) {
     (t) => Math.hypot(t.x - center.x, t.y - center.y) <= radius,
   );
 }
+
+// ===== SEVERITY + ESCALATION =====
+// Escalation rule: 3 events of the same kind in the last 5-cycle window
+// promote the next one to 'critical'; 2 in window → 'moderate'; else 'minor'.
+export function computeSeverity(kind, recentSameKindCount) {
+  if (recentSameKindCount >= 3) return "critical";
+  if (recentSameKindCount >= 2) return "moderate";
+  return "minor";
+}
+
+export function severityMultiplier(severity) {
+  return severity === "critical" ? 2.0 : severity === "moderate" ? 1.4 : 1.0;
+}
+
+// ===== CONSEQUENCES =====
+// Pure function. Returns a list of consequence intents; the caller applies
+// them within DB txn and caps (1 death / 3 injuries / 1 structure per cycle).
+// `shelterSites` is a list of {x,y} points — NPCs within 3 tiles of one count
+// as sheltered during a storm.
+export function computeConsequences({
+  event,
+  alive,
+  shelterSites = [],
+  infrastructure,
+}) {
+  const consequences = [];
+  const severity = event.payload?.severity || "minor";
+  const kind = event.kind;
+
+  if (kind === "storm") {
+    const center = event.payload.center;
+    const radius = event.payload.radius || 5;
+    if (!center) return consequences;
+
+    const affected = alive.filter(
+      (n) =>
+        n.x != null &&
+        n.y != null &&
+        Math.hypot(n.x - center[0], n.y - center[1]) <= radius,
+    );
+    const isSheltered = (n) =>
+      shelterSites.some((s) => Math.hypot(s.x - n.x, s.y - n.y) <= 3);
+
+    // Only moderate/critical storms produce real consequences.
+    if (severity === "moderate" || severity === "critical") {
+      const unsheltered = affected.filter((n) => !isSheltered(n));
+      const injuryCount = severity === "critical" ? 3 : 1;
+      for (const npc of unsheltered.slice(0, injuryCount)) {
+        consequences.push({
+          type: "injury",
+          npc_id: npc.id,
+          npc_name: npc.name,
+          cause: `storm: ${event.payload.label || "coastal storm"}`,
+          severity,
+        });
+      }
+    }
+
+    if (
+      severity === "critical" &&
+      (infrastructure?.permanent?.length || 0) > 0
+    ) {
+      consequences.push({
+        type: "structure_damage",
+        structure: "exposed coastal shelter",
+        cause: `storm: ${event.payload.label || "coastal storm"}`,
+        severity,
+      });
+    }
+  }
+
+  if (kind === "threat_sighted") {
+    const tile = event.payload.tile;
+    if (!tile) return consequences;
+
+    const armedRx = /scout|watcher|sentry|runner|guard|ranger|prospector/i;
+    const armedIds = new Set(
+      alive.filter((n) => armedRx.test(n.role)).map((n) => n.id),
+    );
+    const nearby = alive.filter(
+      (n) =>
+        n.x != null &&
+        n.y != null &&
+        Math.hypot(n.x - tile[0], n.y - tile[1]) <= 3,
+    );
+    const unarmedNearby = nearby.filter((n) => !armedIds.has(n.id));
+
+    if (severity === "critical" && unarmedNearby.length > 0) {
+      const injuryCount = Math.min(2, unarmedNearby.length);
+      for (const npc of unarmedNearby.slice(0, injuryCount)) {
+        consequences.push({
+          type: "injury",
+          npc_id: npc.id,
+          npc_name: npc.name,
+          cause: `predator: ${event.payload.label || "threat"}`,
+          severity,
+        });
+      }
+    }
+  }
+
+  return consequences;
+}
+
+// ===== RESOURCE BALANCE =====
+// Computes per-cycle food/water production - consumption from alive NPC
+// roster + active infrastructure. Deficit counters roll on prev balance.
+export function computeResourceBalance({
+  alive,
+  infrastructure,
+  prevBalance = {},
+}) {
+  const pop = alive.length;
+  const perm = infrastructure?.permanent || [];
+  const claims = infrastructure?.claims || [];
+  const systems = infrastructure?.systems || [];
+
+  const foragerRx = /forager|fisher|gatherer|trader|shore|tide/i;
+  const fieldRx = /field|planner|farmer/i;
+  const producers = alive.filter((n) => foragerRx.test(n.role)).length;
+  const fieldWorkers = alive.filter((n) => fieldRx.test(n.role)).length;
+
+  const granaryCount = perm.filter((s) =>
+    /granary|harvest|depot/i.test(s),
+  ).length;
+  const dryingRackCount = perm.filter((s) => /drying|rack/i.test(s)).length;
+  const waterSourceCount =
+    perm.filter((s) => /spring|cistern|well|wharf/i.test(s)).length +
+    claims.filter((c) => /spring|water|cove/i.test(c)).length;
+
+  const food_production = Number(
+    (
+      producers * 1.3 +
+      fieldWorkers * 2.0 +
+      granaryCount * 0.5 +
+      dryingRackCount * 0.8
+    ).toFixed(2),
+  );
+  const food_consumption = Number((pop * 1.0).toFixed(2));
+  const food_balance = Number((food_production - food_consumption).toFixed(2));
+
+  const water_production = Number((waterSourceCount * 5.0).toFixed(2));
+  const water_consumption = Number((pop * 1.0).toFixed(2));
+  const water_balance = Number(
+    (water_production - water_consumption).toFixed(2),
+  );
+
+  const food_deficit_days =
+    food_balance < 0 ? (prevBalance.food_deficit_days || 0) + 1 : 0;
+  const water_deficit_days =
+    water_balance < 0 ? (prevBalance.water_deficit_days || 0) + 1 : 0;
+
+  return {
+    food_production,
+    food_consumption,
+    food_balance,
+    water_production,
+    water_consumption,
+    water_balance,
+    food_deficit_days,
+    water_deficit_days,
+  };
+}
+
+// ===== FALLBACK DECISION =====
+// When a cycle advances with zero leader decisions, engine inserts a
+// maintenance log so there's no visual dead air on the logs feed.
+const FALLBACK_ACTIONS = [
+  {
+    action: "watch rotation drill",
+    reasoning:
+      "Sentries + scouts run coordinated shift drill; baseline readiness maintained.",
+  },
+  {
+    action: "shelter restock",
+    reasoning:
+      "Kelp + driftwood stocks replenished across shelter network; standard between-storm maintenance.",
+  },
+  {
+    action: "courier path maintenance",
+    reasoning:
+      "Cael + Corin + Perric sweep cairn waypoints; no new claims, routine upkeep.",
+  },
+  {
+    action: "granary inventory",
+    reasoning:
+      "Osric + Ilka audit vessel stock + food rotation; nothing flagged.",
+  },
+  {
+    action: "perimeter inspection",
+    reasoning: "Palisade + marker network walk; no damage, no incursion signs.",
+  },
+  {
+    action: "tool cache audit",
+    reasoning:
+      "Harlan inventories metal-tier stock; spare spear tips at reserve.",
+  },
+  {
+    action: "NPC rotation",
+    reasoning:
+      "Labor pool shuffles between sites per standing rotation policy; morale maintenance.",
+  },
+  {
+    action: "forage circuit sweep",
+    reasoning:
+      "Liora + Ilka complete biome loop; berry + root yields logged without flag.",
+  },
+  {
+    action: "smithy cool-cycle",
+    reasoning:
+      "Harlan idles forge for inspection; shared kiln maintenance for Osric's pottery batch.",
+  },
+  {
+    action: "map update",
+    reasoning:
+      "Scouts update central cairn map with week's drift; no new territory, corrected prior estimates.",
+  },
+];
+
+export function generateFallbackDecision(cycle) {
+  const pick =
+    FALLBACK_ACTIONS[Math.floor(Math.random() * FALLBACK_ACTIONS.length)];
+  return {
+    leader: "auto",
+    cycle,
+    action: pick.action,
+    reasoning: pick.reasoning,
+  };
+}
+
+// ===== SHELTER SITES (heuristic) =====
+// Derive shelter positions from infrastructure keys + known zone names. Used
+// by consequence application to check storm protection radius.
+export function deriveShelterSites(infrastructure) {
+  const perm = infrastructure?.permanent || [];
+  const sites = [];
+  const has = (rx) => perm.some((s) => rx.test(s));
+  const ZONE_PT = {
+    central: { x: 20, y: 12 },
+    nw: { x: 13, y: 5 },
+    s: { x: 20, y: 20 },
+    e: { x: 27, y: 11 },
+    w: { x: 4, y: 14 },
+    ember: { x: 18, y: 12 },
+  };
+  if (has(/s[_-]?storm[_-]?shelter|s[_-]?palisade/i)) sites.push(ZONE_PT.s);
+  if (has(/nw[_-]?foothold|nw[_-]?shelter|storm[_-]?shelter[_-]?nw/i))
+    sites.push(ZONE_PT.nw);
+  if (has(/e[_-]?coast|e[_-]?hub|storm[_-]?shelter[_-]?e/i))
+    sites.push(ZONE_PT.e);
+  if (has(/w[_-]?coast|storm[_-]?shelter[_-]?w/i)) sites.push(ZONE_PT.w);
+  if (has(/ember|ember[_-]?spring/i)) sites.push(ZONE_PT.ember);
+  sites.push(ZONE_PT.central); // central camp always counts as shelter
+  return sites;
+}

@@ -6,6 +6,12 @@ import {
   seedPositionFor,
   jitterPosition,
   rollEvents,
+  computeSeverity,
+  severityMultiplier,
+  computeConsequences,
+  computeResourceBalance,
+  generateFallbackDecision,
+  deriveShelterSites,
 } from "./engine.js";
 
 const app = express();
@@ -209,7 +215,15 @@ app.post("/api/decisions", async (req, res, next) => {
   }
 });
 
-// Core cycle advancement — extracted so the auto-cycle ticker can call it too.
+// Core cycle advancement. Single transaction that:
+// 1. Jitters NPC positions
+// 2. Rolls events with severity tagging (escalation + streak-boost)
+// 3. Applies consequences with per-cycle caps (1 death / 3 injuries / 1 structure)
+// 4. Computes food/water balance, rolls deficit effects
+// 5. Inserts consequence logs linked back to their cause events
+// 6. Falls back to an 'auto' maintenance log if no leader posted this cycle
+const CAPS = { deaths: 1, injuries: 3, structure_damage: 1 };
+
 async function runCycleAdvance() {
   const client = await pool.connect();
   try {
@@ -224,17 +238,19 @@ async function runCycleAdvance() {
       throw new Error("no world seeded");
     }
 
-    const { rows: aliveNpcs } = await client.query(
-      "SELECT * FROM npcs WHERE alive = true",
-    );
-    const truePop = aliveNpcs.length;
-
     const prevCycle = current.cycle;
     const nextCycle = prevCycle + 1;
 
-    // Position jitter. Persist per-NPC new x/y and collect deltas.
+    // Alive = alive flag AND condition != dead. Incapacitated still alive but
+    // doesn't produce / consume beyond base consumption.
+    const { rows: aliveNpcs } = await client.query(
+      "SELECT * FROM npcs WHERE alive = true AND condition != 'dead'",
+    );
+
+    // ---- Position jitter ----
     const position_deltas = [];
     for (const n of aliveNpcs) {
+      if (n.condition === "incapacitated") continue; // injured-heavy stay put
       const from = { x: n.x, y: n.y };
       const to = jitterPosition(n);
       if (to.x !== from.x || to.y !== from.y) {
@@ -247,10 +263,169 @@ async function runCycleAdvance() {
       }
     }
 
+    // ---- Severity escalation: count recent same-kind events (last 5 cycles)
+    const { rows: recent } = await client.query(
+      `SELECT kind, cycle FROM events
+        WHERE cycle >= $1 AND cycle <= $2
+          AND kind IN ('storm','discovery','threat_sighted')`,
+      [Math.max(0, prevCycle - 4), prevCycle],
+    );
+    const countByKind = (kind) => recent.filter((e) => e.kind === kind).length;
+
+    // ---- Dry-streak boost (existing) ----
+    const streakRow = await client.query(
+      `SELECT COALESCE(MAX(cycle), 0) AS last_evt_cycle
+         FROM events
+        WHERE kind IN ('storm','discovery','threat_sighted')`,
+    );
+    const lastEventCycle = Number(streakRow.rows[0].last_evt_cycle) || 0;
+    const dry_streak = Math.max(0, prevCycle - lastEventCycle);
+
+    // ---- Roll events; tag severity; scale radius ----
+    const terrain = current.terrain || [];
+    const rolled = rollEvents({
+      cycle: nextCycle,
+      npcs: aliveNpcs,
+      terrain,
+      dry_streak,
+    });
+    for (const evt of rolled) {
+      const sameKindCount = countByKind(evt.kind);
+      const severity = computeSeverity(evt.kind, sameKindCount);
+      evt.payload.severity = severity;
+      if (typeof evt.payload.radius === "number") {
+        evt.payload.radius = Math.round(
+          evt.payload.radius * severityMultiplier(severity),
+        );
+      }
+    }
+
+    // ---- Compute consequences (pre-apply) ----
+    const shelterSites = deriveShelterSites(current.infrastructure);
+    let deathsUsed = 0;
+    let injuriesUsed = 0;
+    let structureDamageUsed = 0;
+    const allConsequences = [];
+
+    for (const evt of rolled) {
+      const raw = computeConsequences({
+        event: evt,
+        alive: aliveNpcs,
+        shelterSites,
+        infrastructure: current.infrastructure,
+      });
+      const applied = [];
+      for (const c of raw) {
+        if (c.type === "injury" && injuriesUsed < CAPS.injuries) {
+          const target = aliveNpcs.find((n) => n.id === c.npc_id);
+          if (!target || target.condition === "dead") continue;
+          const nextCondition =
+            target.condition === "healthy"
+              ? "injured"
+              : target.condition === "injured"
+                ? "incapacitated"
+                : "incapacitated";
+          await client.query(
+            `UPDATE npcs SET condition = $1, injury_cycle = $2,
+                             last_condition_change = $2
+               WHERE id = $3`,
+            [nextCondition, nextCycle, target.id],
+          );
+          target.condition = nextCondition; // mutate local so later rolls see it
+          applied.push({ ...c, result: nextCondition });
+          injuriesUsed++;
+        } else if (
+          c.type === "structure_damage" &&
+          structureDamageUsed < CAPS.structure_damage
+        ) {
+          applied.push(c);
+          structureDamageUsed++;
+        }
+      }
+      evt.payload.consequences = applied;
+      allConsequences.push(...applied);
+    }
+
+    // ---- Resource balance (based on current alive roster AFTER injuries) ----
+    const aliveForBalance = aliveNpcs.filter(
+      (n) => n.condition !== "dead" && n.condition !== "incapacitated",
+    );
+    const prevBalance = {
+      food_deficit_days: Number(current.resources?.food_deficit_days || 0),
+      water_deficit_days: Number(current.resources?.water_deficit_days || 0),
+    };
+    const balance = computeResourceBalance({
+      alive: aliveForBalance,
+      infrastructure: current.infrastructure,
+      prevBalance,
+    });
+
+    // ---- Deficit effects ----
+    if (balance.food_deficit_days > 3) {
+      // Drop morale for up to 2 non-low NPCs.
+      const victims = aliveNpcs
+        .filter((n) => n.condition !== "dead" && n.morale !== "low")
+        .slice(0, 2);
+      for (const v of victims) {
+        const newMorale = v.morale === "high" ? "med" : "low";
+        await client.query("UPDATE npcs SET morale = $1 WHERE id = $2", [
+          newMorale,
+          v.id,
+        ]);
+        allConsequences.push({
+          type: "morale_drop",
+          npc_id: v.id,
+          npc_name: v.name,
+          cause: `food deficit ${balance.food_deficit_days}d`,
+          from: v.morale,
+          to: newMorale,
+        });
+      }
+    }
+    if (balance.water_deficit_days > 2 && injuriesUsed < CAPS.injuries) {
+      // Drop condition for 1 healthy NPC.
+      const victim = aliveNpcs.find(
+        (n) => n.condition === "healthy" && n.alive,
+      );
+      if (victim) {
+        await client.query(
+          `UPDATE npcs SET condition = 'injured', injury_cycle = $1,
+                           last_condition_change = $1 WHERE id = $2`,
+          [nextCycle, victim.id],
+        );
+        victim.condition = "injured";
+        allConsequences.push({
+          type: "injury",
+          npc_id: victim.id,
+          npc_name: victim.name,
+          cause: `water deficit ${balance.water_deficit_days}d`,
+          result: "injured",
+        });
+        injuriesUsed++;
+      }
+    }
+
+    // ---- Update world + count alive ----
+    const { rows: aliveRecount } = await client.query(
+      "SELECT COUNT(*)::int AS n FROM npcs WHERE alive = true AND condition != 'dead'",
+    );
+    const pop = aliveRecount[0].n;
+    const newResources = {
+      ...(current.resources || {}),
+      food_production: balance.food_production,
+      food_consumption: balance.food_consumption,
+      food_balance: balance.food_balance,
+      food_deficit_days: balance.food_deficit_days,
+      water_production: balance.water_production,
+      water_consumption: balance.water_consumption,
+      water_balance: balance.water_balance,
+      water_deficit_days: balance.water_deficit_days,
+    };
     const updated = await client.query(
-      `UPDATE world SET cycle = $1, population = $2, updated_at = now()
-       WHERE id = $3 RETURNING *`,
-      [nextCycle, truePop, current.id],
+      `UPDATE world SET cycle = $1, population = $2, resources = $3::jsonb,
+                        updated_at = now()
+         WHERE id = $4 RETURNING *`,
+      [nextCycle, pop, newResources, current.id],
     );
 
     await client.query(
@@ -258,6 +433,7 @@ async function runCycleAdvance() {
       [nextCycle],
     );
 
+    // ---- Persist advance + rolled events ----
     const advanceEvent = await client.query(
       "INSERT INTO events (cycle, kind, payload) VALUES ($1, 'cycle_advance', $2) RETURNING *",
       [
@@ -265,29 +441,20 @@ async function runCycleAdvance() {
         {
           from: prevCycle,
           to: nextCycle,
-          population: truePop,
+          population: pop,
           position_deltas: position_deltas.slice(0, 50),
+          balance: {
+            food: balance.food_balance,
+            water: balance.water_balance,
+          },
+          caps_used: {
+            deaths: deathsUsed,
+            injuries: injuriesUsed,
+            structure_damage: structureDamageUsed,
+          },
         },
       ],
     );
-
-    // Roll weather/discovery/threat events; persist each.
-    // Dry-streak = number of committed cycles since the last non-cycle_advance
-    // event. Self-corrects prolonged droughts via a probability boost.
-    const terrain = updated.rows[0].terrain || [];
-    const streakRow = await client.query(
-      `SELECT COALESCE(MAX(cycle), 0) AS last_evt_cycle
-         FROM events
-        WHERE kind IN ('storm','discovery','threat_sighted')`,
-    );
-    const lastEventCycle = Number(streakRow.rows[0].last_evt_cycle) || 0;
-    const dry_streak = Math.max(0, nextCycle - 1 - lastEventCycle);
-    const rolled = rollEvents({
-      cycle: nextCycle,
-      npcs: aliveNpcs,
-      terrain,
-      dry_streak,
-    });
     const persistedRolled = [];
     for (const evt of rolled) {
       const r = await client.query(
@@ -297,13 +464,68 @@ async function runCycleAdvance() {
       persistedRolled.push(r.rows[0]);
     }
 
+    // ---- Consequence logs linked back to their cause events ----
+    for (let i = 0; i < persistedRolled.length; i++) {
+      const saved = persistedRolled[i];
+      const consequences = rolled[i].payload?.consequences || [];
+      for (const c of consequences) {
+        const action =
+          c.type === "injury"
+            ? `${c.npc_name} injured (${c.result || "injured"}) — ${c.cause}`
+            : c.type === "structure_damage"
+              ? `structure damaged: ${c.structure} — ${c.cause}`
+              : `${c.type}: ${c.cause}`;
+        await client.query(
+          `INSERT INTO logs (cycle, leader, action, reasoning, cause_event_id)
+           VALUES ($1, 'auto', $2, $3, $4)`,
+          [
+            nextCycle,
+            action,
+            `severity: ${c.severity || "moderate"}`,
+            saved.id,
+          ],
+        );
+      }
+    }
+
+    // Also log deficit-driven consequences (not tied to a specific event).
+    for (const c of allConsequences) {
+      if (c.type === "morale_drop") {
+        await client.query(
+          `INSERT INTO logs (cycle, leader, action, reasoning)
+           VALUES ($1, 'auto', $2, $3)`,
+          [
+            nextCycle,
+            `${c.npc_name} morale ${c.from} → ${c.to}`,
+            `caused by ${c.cause}`,
+          ],
+        );
+      }
+    }
+
+    // ---- Fallback decision: no leader posted this cycle? Engine fills. ----
+    const { rows: leaderCount } = await client.query(
+      "SELECT COUNT(*)::int AS n FROM logs WHERE cycle = $1 AND leader IN ('sr','jr')",
+      [nextCycle],
+    );
+    if (leaderCount[0].n === 0) {
+      const fb = generateFallbackDecision(nextCycle);
+      await client.query(
+        `INSERT INTO logs (cycle, leader, action, reasoning)
+         VALUES ($1, $2, $3, $4)`,
+        [nextCycle, fb.leader, fb.action, fb.reasoning],
+      );
+    }
+
     await client.query("COMMIT");
     return {
       world: updated.rows[0],
       delta: {
         cycle: { from: prevCycle, to: nextCycle },
-        population: { reconciled: truePop, previous: current.population },
+        population: { reconciled: pop, previous: current.population },
         position_deltas,
+        consequences: allConsequences,
+        balance,
       },
       events: [advanceEvent.rows[0], ...persistedRolled],
     };

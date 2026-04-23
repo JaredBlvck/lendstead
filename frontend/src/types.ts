@@ -18,6 +18,8 @@ export interface World {
 export type Morale = 'low' | 'med' | 'medium' | 'high';
 export type Lane = 'sr' | 'jr';
 
+export type Condition = 'healthy' | 'injured' | 'incapacitated' | 'dead';
+
 export interface NPC {
   id: number;
   name: string;
@@ -34,15 +36,27 @@ export interface NPC {
   // catches up.
   x?: number;
   y?: number;
+  // Consequence system (v4 directive). All optional - frontend renders
+  // gracefully whether or not the backend is populating them yet.
+  condition?: Condition;
+  injury_cycle?: number;
+  death_cycle?: number;
 }
+
+export type LeaderKind = Lane | 'auto';
 
 export interface LogEntry {
   id: number;
   cycle: number;
-  leader: Lane;
+  leader: LeaderKind;
   action: string;
   reasoning: string;
   created_at: string;
+  // Consequence chain (v4 directive). When a log is emitted as a
+  // consequence of an event or another log, these point at the cause.
+  cause_event_id?: number;
+  cause_log_id?: number;
+  severity?: 'minor' | 'moderate' | 'critical';
 }
 
 export interface CycleEvent {
@@ -51,6 +65,14 @@ export interface CycleEvent {
   kind: string;
   payload: Record<string, unknown>;
   created_at: string;
+}
+
+// Food/water balance surfaced into world.resources or a top-level field
+// by the backend when the consequence directive lands. Optional.
+export interface ResourceBalance {
+  production: number;
+  consumption: number;
+  surplus_days: number; // negative = deficit
 }
 
 // Mirrors /api/auto-cycle/{status,start,stop} response.

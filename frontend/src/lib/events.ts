@@ -8,6 +8,8 @@ import type { CycleEvent } from '../types';
 
 export type DisplayEventKind = 'storm' | 'discovery' | 'threat';
 
+export type EventSeverity = 'minor' | 'moderate' | 'critical';
+
 export interface DisplayEvent {
   id: string;
   kind: DisplayEventKind;
@@ -17,6 +19,7 @@ export interface DisplayEvent {
   label: string;
   seenAt: number;
   lifespanMs: number;
+  severity: EventSeverity;
 }
 
 const LIFESPAN: Record<DisplayEventKind, number> = {
@@ -54,17 +57,29 @@ export function toDisplayEvent(
     asXY((payload.affected_tiles as unknown[])?.[0]);
   if (!xy) return null;
 
-  const radius =
+  const severity: EventSeverity =
+    payload.severity === 'critical' || payload.severity === 'moderate' || payload.severity === 'minor'
+      ? (payload.severity as EventSeverity)
+      : 'moderate';
+
+  // Severity scales the visual radius: minor 0.75x, moderate 1x, critical 1.4x
+  const severityScale = severity === 'critical' ? 1.4 : severity === 'minor' ? 0.75 : 1;
+  const baseRadius =
     typeof payload.radius === 'number'
       ? payload.radius
       : kind === 'storm'
         ? 6
         : 2;
+  const radius = baseRadius * severityScale;
 
   const label = typeof payload.label === 'string' ? payload.label : kind;
 
   const seenAt = firstSeen.get(event.id) ?? now;
   firstSeen.set(event.id, seenAt);
+
+  // Critical events linger longer
+  const lifespanMs =
+    severity === 'critical' ? LIFESPAN[kind] * 1.35 : severity === 'minor' ? LIFESPAN[kind] * 0.75 : LIFESPAN[kind];
 
   return {
     id: `srv-${event.id}`,
@@ -74,7 +89,8 @@ export function toDisplayEvent(
     radius,
     label,
     seenAt,
-    lifespanMs: LIFESPAN[kind],
+    lifespanMs,
+    severity,
   };
 }
 
