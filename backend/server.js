@@ -12,6 +12,7 @@ import {
   computeResourceBalance,
   generateFallbackDecision,
   deriveShelterSites,
+  rescueStrandedNpcs,
 } from "./engine.js";
 
 const app = express();
@@ -248,11 +249,12 @@ async function runCycleAdvance() {
     );
 
     // ---- Position jitter ----
+    const terrainForJitter = current.terrain || [];
     const position_deltas = [];
     for (const n of aliveNpcs) {
       if (n.condition === "incapacitated") continue; // injured-heavy stay put
       const from = { x: n.x, y: n.y };
-      const to = jitterPosition(n);
+      const to = jitterPosition(n, terrainForJitter);
       if (to.x !== from.x || to.y !== from.y) {
         await client.query("UPDATE npcs SET x = $1, y = $2 WHERE id = $3", [
           to.x,
@@ -417,8 +419,15 @@ async function runCycleAdvance() {
       const healerAlive = aliveNpcs.some(
         (n) => n.condition !== "dead" && /healer|medic|infirmary/i.test(n.role),
       );
-      const healsThisCycle =
+      // Famine-resistance trait earned from the C59→C588 crisis: the civ
+      // learned preservation habits. Cistern + granary tokens contribute
+      // +0.5 heal/cycle each, capped at +2.
+      const cisternCount = (infraTokens.match(/cistern/gi) || []).length;
+      const granaryCount = (infraTokens.match(/granary/gi) || []).length;
+      const famineResistance = Math.min(2, (cisternCount + granaryCount) * 0.5);
+      const baseHeals =
         medicalCount > 0 ? (healerAlive ? 3 : 2) : healerAlive ? 1 : 0;
+      const healsThisCycle = Math.round(baseHeals + famineResistance);
 
       const incap = aliveNpcs
         .filter((n) => n.condition === "incapacitated")
@@ -719,6 +728,31 @@ async function bootHydrate() {
         ]);
       }
       console.log(`boot: seeded x/y for ${missing.length} NPCs`);
+    }
+
+    // Rescue any NPCs stranded on water tiles (pre-terrain-check jitter drift).
+    const { rows: positioned } = await pool.query(
+      "SELECT id, name, x, y FROM npcs WHERE alive = true AND condition != 'dead' AND x IS NOT NULL AND y IS NOT NULL",
+    );
+    const { rows: terrainRow } = await pool.query(
+      "SELECT terrain FROM world ORDER BY id DESC LIMIT 1",
+    );
+    const terrain = terrainRow[0]?.terrain || [];
+    const rescues = rescueStrandedNpcs({ npcs: positioned, terrain });
+    for (const r of rescues) {
+      await pool.query("UPDATE npcs SET x = $1, y = $2 WHERE id = $3", [
+        r.to.x,
+        r.to.y,
+        r.id,
+      ]);
+    }
+    if (rescues.length > 0) {
+      console.log(
+        `boot: rescued ${rescues.length} NPCs from water tiles (${rescues
+          .slice(0, 3)
+          .map((r) => r.name)
+          .join(", ")}${rescues.length > 3 ? "…" : ""})`,
+      );
     }
   } catch (err) {
     console.error("boot hydrate failed (non-fatal)", err);

@@ -45,25 +45,35 @@ function renderVal(v: unknown): string {
 
 function BalanceBar({ label, balance }: { label: string; balance: ResourceBalance }) {
   const delta = balance.production - balance.consumption;
-  const deficit = balance.surplus_days < 0 || delta < 0;
-  const critical = balance.surplus_days < 1;
-  const cls = critical ? 'balance critical' : deficit ? 'balance warn' : 'balance ok';
+  // Classification is driven by actual production/consumption delta, not
+  // surplus_days - the counter is a runway hint, not the crisis signal.
+  let cls = 'balance ok';
+  let daysLabel: string;
+  if (delta < 0) {
+    // True deficit: production can't cover consumption
+    const deficitMagnitude = balance.surplus_days < 0 ? Math.abs(balance.surplus_days) : 1;
+    cls = deficitMagnitude >= 3 ? 'balance critical' : 'balance warn';
+    daysLabel = `${deficitMagnitude.toFixed(1)}d deficit`;
+  } else if (delta === 0) {
+    cls = 'balance warn';
+    daysLabel = 'break-even';
+  } else {
+    // Surplus. Bar stays green. Label shows +N/day surplus magnitude.
+    cls = 'balance ok';
+    daysLabel = `+${delta.toFixed(1)}/day surplus`;
+  }
   const magnitude = Math.min(1, Math.abs(delta) / Math.max(1, balance.consumption));
   return (
     <div className={cls}>
       <div className="balance-head">
         <span className="balance-label">{label}</span>
-        <span className="balance-days">
-          {balance.surplus_days >= 0
-            ? `${balance.surplus_days.toFixed(1)}d buffer`
-            : `${Math.abs(balance.surplus_days).toFixed(1)}d deficit`}
-        </span>
+        <span className="balance-days">{daysLabel}</span>
       </div>
       <div className="balance-bar">
         <div
           className="balance-fill"
           style={{
-            width: `${Math.max(4, magnitude * 100)}%`,
+            width: `${Math.max(12, magnitude * 100)}%`,
           }}
         />
       </div>

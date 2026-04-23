@@ -184,7 +184,9 @@ export function seedPositionFor(npc, rand) {
 
 // Per-cycle jitter. Drifts NPCs by role intent — scouts push outward, runners
 // travel paths, builders stay put, foragers bounce between biome edges.
-export function jitterPosition(npc) {
+// When `terrain` is provided, rejects moves that would place an NPC on water
+// and falls back to a nearby land tile or the NPC's prior position.
+export function jitterPosition(npc, terrain = null) {
   const cls = positionClass(npc.role);
   const cx = (GRID_W - 1) / 2;
   const cy = (GRID_H - 1) / 2;
@@ -203,18 +205,98 @@ export function jitterPosition(npc) {
       (vy / len) * (Math.random() < 0.6 ? 1 : 0) + (Math.random() * 2 - 1),
     );
   } else if (cls === "edge") {
-    // biome drift, small
     dx = Math.round(Math.random() * 2 - 1);
     dy = Math.round(Math.random() * 2 - 1);
   } else {
-    // center — tiny wobble only, mostly stays put
     dx = Math.random() < 0.3 ? Math.round(Math.random() * 2 - 1) : 0;
     dy = Math.random() < 0.3 ? Math.round(Math.random() * 2 - 1) : 0;
   }
 
-  const nx = Math.max(1, Math.min(GRID_W - 2, (npc.x ?? Math.round(cx)) + dx));
-  const ny = Math.max(1, Math.min(GRID_H - 2, (npc.y ?? Math.round(cy)) + dy));
+  const baseX = npc.x ?? Math.round(cx);
+  const baseY = npc.y ?? Math.round(cy);
+  let nx = Math.max(1, Math.min(GRID_W - 2, baseX + dx));
+  let ny = Math.max(1, Math.min(GRID_H - 2, baseY + dy));
+
+  if (terrain && terrain.length > 0) {
+    const tileAt = (x, y) => terrain.find((t) => t.x === x && t.y === y);
+    const isLand = (t) => t && t.type !== "water";
+    if (!isLand(tileAt(nx, ny))) {
+      // Spiral outward from the candidate tile up to 5 rings looking for land.
+      let found = null;
+      for (let r = 1; r <= 5 && !found; r++) {
+        for (let a = 0; a < 8; a++) {
+          const cand = [
+            [nx + r, ny],
+            [nx - r, ny],
+            [nx, ny + r],
+            [nx, ny - r],
+            [nx + r, ny + r],
+            [nx + r, ny - r],
+            [nx - r, ny + r],
+            [nx - r, ny - r],
+          ][a];
+          const [cx2, cy2] = cand;
+          if (cx2 < 1 || cx2 > GRID_W - 2 || cy2 < 1 || cy2 > GRID_H - 2)
+            continue;
+          if (isLand(tileAt(cx2, cy2))) {
+            found = [cx2, cy2];
+            break;
+          }
+        }
+      }
+      if (found) {
+        nx = found[0];
+        ny = found[1];
+      } else if (isLand(tileAt(baseX, baseY))) {
+        nx = baseX;
+        ny = baseY;
+      }
+    }
+  }
+
   return { x: nx, y: ny };
+}
+
+// One-shot rescue: given a set of NPCs with non-land positions + the terrain,
+// return updated {id, x, y} for any NPC currently in water. Used by the boot
+// hydrate to un-strand anyone who drifted into the ocean before the terrain
+// check was in place.
+export function rescueStrandedNpcs({ npcs, terrain }) {
+  if (!terrain || terrain.length === 0) return [];
+  const tileAt = (x, y) => terrain.find((t) => t.x === x && t.y === y);
+  const isLand = (t) => t && t.type !== "water";
+  const landTiles = terrain.filter(
+    (t) =>
+      t.type !== "water" &&
+      t.x > 0 &&
+      t.y > 0 &&
+      t.x < GRID_W - 1 &&
+      t.y < GRID_H - 1,
+  );
+  if (landTiles.length === 0) return [];
+  const rescued = [];
+  for (const n of npcs) {
+    if (n.x == null || n.y == null) continue;
+    if (isLand(tileAt(n.x, n.y))) continue;
+    // Find the nearest land tile.
+    let best = null;
+    let bestD = Infinity;
+    for (const t of landTiles) {
+      const d = Math.hypot(t.x - n.x, t.y - n.y);
+      if (d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    if (best)
+      rescued.push({
+        id: n.id,
+        name: n.name,
+        from: { x: n.x, y: n.y },
+        to: { x: best.x, y: best.y },
+      });
+  }
+  return rescued;
 }
 
 // Roll weather/discovery/threat events for a cycle. Each has a configurable
