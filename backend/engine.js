@@ -426,35 +426,69 @@ export function computeConsequences({
 // ===== RESOURCE BALANCE =====
 // Computes per-cycle food/water production - consumption from alive NPC
 // roster + active infrastructure. Deficit counters roll on prev balance.
+// Infrastructure JSONB evolved: seed uses arrays (`permanent`, `claims`,
+// `systems`), but /api/decisions infra_delta merges flat keys (granary:
+// "built..."). Flatten both shapes into a token stream so structure counting
+// doesn't lose builds that went in via decisions.
+function infrastructureTokens(infra = {}) {
+  const tokens = [];
+  for (const [k, v] of Object.entries(infra)) {
+    if (Array.isArray(v)) {
+      for (const item of v) if (typeof item === "string") tokens.push(item);
+    } else if (typeof v === "string") {
+      tokens.push(k, v);
+    } else if (v && typeof v === "object") {
+      for (const [kk, vv] of Object.entries(v)) {
+        if (typeof vv === "string") tokens.push(kk, vv);
+      }
+    }
+  }
+  return tokens;
+}
+
 export function computeResourceBalance({
   alive,
   infrastructure,
   prevBalance = {},
 }) {
   const pop = alive.length;
-  const perm = infrastructure?.permanent || [];
-  const claims = infrastructure?.claims || [];
-  const systems = infrastructure?.systems || [];
+  const tokens = infrastructureTokens(infrastructure || {});
 
-  const foragerRx = /forager|fisher|gatherer|trader|shore|tide/i;
-  const fieldRx = /field|planner|farmer/i;
+  const foragerRx = /forager|fisher|gatherer|trader|shore|tide|hunter/i;
+  const fieldRx = /field|planner|farmer|ag[_-]?prep/i;
   const producers = alive.filter((n) => foragerRx.test(n.role)).length;
   const fieldWorkers = alive.filter((n) => fieldRx.test(n.role)).length;
 
-  const granaryCount = perm.filter((s) =>
-    /granary|harvest|depot/i.test(s),
-  ).length;
-  const dryingRackCount = perm.filter((s) => /drying|rack/i.test(s)).length;
-  const waterSourceCount =
-    perm.filter((s) => /spring|cistern|well|wharf/i.test(s)).length +
-    claims.filter((c) => /spring|water|cove/i.test(c)).length;
+  // Count distinct structure-matching tokens. Token list is pre-de-duped
+  // inside the regex match (structure name OR description both count once).
+  const matchCount = (rx) => tokens.filter((t) => rx.test(t)).length;
+  // Clamp so a wordy description (multiple hits in one value) doesn't inflate.
+  const granaryCount = Math.min(
+    6,
+    matchCount(/granary|harvest[_-]?depot|food[_-]?storage/i),
+  );
+  const dryingRackCount = Math.min(
+    6,
+    matchCount(/drying[_-]?rack|smokehouse|curing/i),
+  );
+  const waterSourceCount = Math.min(
+    8,
+    matchCount(
+      /spring|cistern|well|wharf|water[_-]?source|freshwater|ember[_-]?spring/i,
+    ),
+  );
 
+  const hasMetalTier = tokens.some((t) =>
+    /metal[_-]?tier|tool[_-]?progression/i.test(t),
+  );
+  const metalBonus = hasMetalTier ? 5 : 0; // metal hoe/axe throughput boost
   const food_production = Number(
     (
-      producers * 1.3 +
-      fieldWorkers * 2.0 +
-      granaryCount * 0.5 +
-      dryingRackCount * 0.8
+      producers * 1.8 +
+      fieldWorkers * 3.0 +
+      granaryCount * 1.0 +
+      dryingRackCount * 1.5 +
+      metalBonus
     ).toFixed(2),
   );
   const food_consumption = Number((pop * 1.0).toFixed(2));
@@ -466,10 +500,16 @@ export function computeResourceBalance({
     (water_production - water_consumption).toFixed(2),
   );
 
+  // Deficit days capped at 10 so a runaway sim doesn't accelerate into oblivion
+  // while we sleep — signal stays loud, cascade damage bounded.
   const food_deficit_days =
-    food_balance < 0 ? (prevBalance.food_deficit_days || 0) + 1 : 0;
+    food_balance < 0
+      ? Math.min(10, (prevBalance.food_deficit_days || 0) + 1)
+      : 0;
   const water_deficit_days =
-    water_balance < 0 ? (prevBalance.water_deficit_days || 0) + 1 : 0;
+    water_balance < 0
+      ? Math.min(10, (prevBalance.water_deficit_days || 0) + 1)
+      : 0;
 
   return {
     food_production,
