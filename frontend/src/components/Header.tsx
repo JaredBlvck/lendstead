@@ -13,6 +13,7 @@ interface Props {
   advancing: boolean;
   lastSyncLabel: string;
   errorMessage?: string;
+  onEnter3D?: () => void;
 }
 
 const SPEED_OPTIONS: Array<{ label: string; ms: number }> = [
@@ -33,6 +34,7 @@ export function Header({
   advancing,
   lastSyncLabel,
   errorMessage,
+  onEnter3D,
 }: Props) {
   // Stage is derived from the canonical world.population so it only bumps
   // when a cycle advance commits. Header also shows alive NPCs so viewers
@@ -91,6 +93,12 @@ export function Header({
         <button className="advance-btn" onClick={onAdvance} disabled={advancing}>
           {advancing ? 'Advancing...' : `Advance -> C${world.cycle + 1}`}
         </button>
+
+        {onEnter3D && (
+          <button className="enter-3d-btn" onClick={onEnter3D} title="Enter 3D exploration mode">
+            Walk the Island
+          </button>
+        )}
 
         <div className="header-meta">
           {errorMessage && (

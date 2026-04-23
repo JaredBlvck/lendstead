@@ -1,3 +1,4 @@
+import { lazy, Suspense, useState } from 'react';
 import {
   useWorld,
   useNPCs,
@@ -12,15 +13,20 @@ import { StatsCard } from './components/StatsCard';
 import { NPCList } from './components/NPCList';
 import { LogsFeed } from './components/LogsFeed';
 
+// 3D exploration view is code-split so the Three.js bundle only loads
+// when the user opens it.
+const ExplorationView = lazy(() =>
+  import('./components/ExplorationView').then((m) => ({ default: m.ExplorationView })),
+);
+
 export default function App() {
+  const [mode, setMode] = useState<'dashboard' | 'exploration'>('dashboard');
+
   const world = useWorld();
   const npcs = useNPCs();
   const logs = useLogs();
   const manualAdvance = useAdvanceCycle();
 
-  // Backend owns auto-cycle execution. UI picks the speed, server runs the
-  // ticker, status query reflects what's actually running. World/npcs/logs
-  // still poll every 3s so server advances appear naturally.
   const autoStatus = useAutoCycleStatus();
   const autoCtl = useAutoCycleControl();
 
@@ -72,8 +78,26 @@ export default function App() {
   const w = world.data;
   const allNPCs = npcs.data ?? [];
   const allLogs = logs.data ?? [];
-  const autoPending =
-    autoCtl.start.isPending || autoCtl.stop.isPending;
+  const autoPending = autoCtl.start.isPending || autoCtl.stop.isPending;
+
+  if (mode === 'exploration') {
+    return (
+      <Suspense
+        fallback={
+          <div className="boot">
+            <div className="boot-title">Lendstead</div>
+            <div className="boot-sub">Entering the island...</div>
+          </div>
+        }
+      >
+        <ExplorationView
+          world={w}
+          npcs={allNPCs}
+          onExit={() => setMode('dashboard')}
+        />
+      </Suspense>
+    );
+  }
 
   return (
     <div className="app">
@@ -88,6 +112,7 @@ export default function App() {
         advancing={manualAdvance.isPending}
         lastSyncLabel={new Date(w.updated_at).toLocaleTimeString()}
         errorMessage={error instanceof Error ? error.message : undefined}
+        onEnter3D={() => setMode('exploration')}
       />
       <GameMap world={w} npcs={allNPCs} />
       <StatsCard world={w} />
