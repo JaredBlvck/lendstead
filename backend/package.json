@@ -1,0 +1,20 @@
+{
+  "name": "lendstead-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lendstead civilization sim — backend API + cycle engine",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "migrate": "node migrate.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
