@@ -95,34 +95,73 @@ app.post("/api/decisions", async (req, res, next) => {
       [cycle, leader, action, reasoning],
     );
 
+    let npcs_added = 0;
+    let npcs_updated = 0;
+    const npc_errors = [];
+
     for (const change of npc_changes) {
-      if (change.op === "add") {
+      const name = change?.name;
+      if (!name) {
+        npc_errors.push({ change, error: "missing name" });
+        continue;
+      }
+
+      const explicitOp = change.op;
+      const hasCreateFields = Boolean(change.role && change.lane);
+      const isAdd = explicitOp === "add" || (!explicitOp && hasCreateFields);
+      const isUpdate =
+        explicitOp === "update" || (!explicitOp && !hasCreateFields);
+
+      if (isAdd) {
         const {
-          name,
           role,
           skill = 3,
           morale = "med",
           status = "",
           lane,
+          alive = true,
           cycle_created = cycle,
         } = change;
-        await client.query(
-          `INSERT INTO npcs (name, role, skill, morale, status, lane, cycle_created)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
-           ON CONFLICT (name) DO NOTHING`,
-          [name, role, skill, morale, status, lane, cycle_created],
+        if (!role || !lane) {
+          npc_errors.push({ name, error: "add requires role + lane" });
+          continue;
+        }
+        const r = await client.query(
+          `INSERT INTO npcs (name, role, skill, morale, status, lane, alive, cycle_created)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (name) DO NOTHING
+           RETURNING id`,
+          [name, role, skill, morale, status, lane, alive, cycle_created],
         );
-      } else if (change.op === "update") {
-        const { name, status, morale, skill, alive } = change;
-        await client.query(
+        if (r.rowCount > 0) npcs_added++;
+        else npc_errors.push({ name, error: "name already exists (no-op)" });
+      } else if (isUpdate) {
+        const { status, morale, skill, alive, role, lane } = change;
+        const r = await client.query(
           `UPDATE npcs SET
              status = COALESCE($2, status),
              morale = COALESCE($3, morale),
              skill  = COALESCE($4, skill),
-             alive  = COALESCE($5, alive)
-           WHERE name = $1`,
-          [name, status ?? null, morale ?? null, skill ?? null, alive ?? null],
+             alive  = COALESCE($5, alive),
+             role   = COALESCE($6, role),
+             lane   = COALESCE($7, lane)
+           WHERE name = $1
+           RETURNING id`,
+          [
+            name,
+            status ?? null,
+            morale ?? null,
+            skill ?? null,
+            alive ?? null,
+            role ?? null,
+            lane ?? null,
+          ],
         );
+        if (r.rowCount > 0) npcs_updated++;
+        else
+          npc_errors.push({ name, error: "no NPC with that name to update" });
+      } else {
+        npc_errors.push({ name, error: "ambiguous op" });
       }
     }
 
@@ -144,7 +183,13 @@ app.post("/api/decisions", async (req, res, next) => {
     );
 
     await client.query("COMMIT");
-    res.json({ log: logInsert.rows[0], event: evt.rows[0] });
+    res.json({
+      log: logInsert.rows[0],
+      event: evt.rows[0],
+      npcs_added,
+      npcs_updated,
+      npc_errors,
+    });
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     next(e);

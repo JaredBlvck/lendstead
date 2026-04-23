@@ -1,27 +1,27 @@
-import { useWorld, useNPCs, useLogs, useAdvanceCycle } from './hooks/useWorld';
-import { IslandMap } from './components/IslandMap';
+import { useState } from 'react';
+import { useWorld, useNPCs, useLogs, useAutoCycle } from './hooks/useWorld';
+import { GameMap } from './components/GameMap';
+import { Header } from './components/Header';
 import { StatsCard } from './components/StatsCard';
 import { NPCList } from './components/NPCList';
 import { LogsFeed } from './components/LogsFeed';
 
 export default function App() {
+  const [autoSpeedMs, setAutoSpeedMs] = useState(0);
+
   const world = useWorld();
   const npcs = useNPCs();
   const logs = useLogs();
-  const advance = useAdvanceCycle();
+  const advance = useAutoCycle(autoSpeedMs);
 
   const loading = world.isLoading || npcs.isLoading || logs.isLoading;
   const error = world.error || npcs.error || logs.error || advance.error;
 
   if (loading && !world.data) {
     return (
-      <div className="app" style={{ gridTemplateAreas: '"header" "map" "stats"' }}>
-        <div className="header">
-          <div>
-            <h1>Lendstead</h1>
-            <div className="subtitle">Connecting to island…</div>
-          </div>
-        </div>
+      <div className="boot">
+        <div className="boot-title">Lendstead</div>
+        <div className="boot-sub">Reading island state...</div>
       </div>
     );
   }
@@ -30,9 +30,11 @@ export default function App() {
     return (
       <div style={{ padding: 24 }}>
         <div className="error">
-          Couldn't reach the backend. Check <code>VITE_API_URL</code> and that the
-          API is live.
-          {error instanceof Error && <div style={{ marginTop: 8 }}>{error.message}</div>}
+          Couldn't reach the backend. Check <code>VITE_API_URL</code> and that
+          the API is live.
+          {error instanceof Error && (
+            <div style={{ marginTop: 8 }}>{error.message}</div>
+          )}
         </div>
       </div>
     );
@@ -44,31 +46,17 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="header">
-        <div>
-          <h1>{w.civ_name}</h1>
-          <div className="subtitle">
-            Co-led by Sr (Opportunist) + Jr (Architect) · Cycle {w.cycle} · {w.population} alive
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-          {error instanceof Error && (
-            <div className="error" style={{ padding: '6px 10px', fontSize: 12 }}>
-              {error.message}
-            </div>
-          )}
-          <div style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-            Last sync {new Date(w.updated_at).toLocaleTimeString()}
-          </div>
-        </div>
-      </div>
-
-      <IslandMap npcs={allNPCs} cycle={w.cycle} />
-      <StatsCard
+      <Header
         world={w}
+        autoSpeedMs={autoSpeedMs}
+        onAutoSpeedChange={setAutoSpeedMs}
         onAdvance={() => advance.mutate()}
         advancing={advance.isPending}
+        lastSyncLabel={new Date(w.updated_at).toLocaleTimeString()}
+        errorMessage={error instanceof Error ? error.message : undefined}
       />
+      <GameMap world={w} npcs={allNPCs} />
+      <StatsCard world={w} />
       <NPCList npcs={allNPCs} />
       <LogsFeed logs={allLogs} />
     </div>

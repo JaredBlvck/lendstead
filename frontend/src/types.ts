@@ -8,9 +8,14 @@ export interface World {
   infrastructure: Record<string, number>;
   civ_name: string;
   updated_at: string;
+  // Populated once backend ships tile-grid column. Optional so the
+  // frontend falls back to client-side terrain generation until then.
+  terrain?: Array<{ x: number; y: number; type: string; height?: number }>;
 }
 
-export type Morale = 'low' | 'medium' | 'high';
+// Backend seed uses 'med' not 'medium'. Accept both so the dashboard never
+// renders undefined for a valid API response.
+export type Morale = 'low' | 'med' | 'medium' | 'high';
 export type Lane = 'sr' | 'jr';
 
 export interface NPC {
@@ -24,6 +29,11 @@ export interface NPC {
   alive: boolean;
   cycle_created: number;
   created_at: string;
+  // Tile-grid position once backend ships x/y columns. Optional so we
+  // fall back to deterministic client-seeded positions until backend
+  // catches up.
+  x?: number;
+  y?: number;
 }
 
 export interface LogEntry {
