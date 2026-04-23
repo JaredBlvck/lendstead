@@ -245,6 +245,21 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   color: var(--text-dim);
   backdrop-filter: blur(8px);
 }
+.sound-toggle {
+  background: rgba(11, 14, 20, 0.85);
+  color: var(--text);
+  border: 1px solid var(--border);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  font-size: 14px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sound-toggle:hover { filter: brightness(1.1); }
+
 .hud-exit,
 .mode-toggle {
   background: rgba(11, 14, 20, 0.85);

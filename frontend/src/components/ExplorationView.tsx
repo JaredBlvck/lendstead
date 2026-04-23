@@ -15,6 +15,7 @@ import {
 import { useEvents } from '../hooks/useWorld';
 import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
 import { VirtualJoystick } from './VirtualJoystick';
+import { audio } from '../lib/audio';
 
 // Input state shared by keyboard + joystick + click-to-walk. FPSController
 // reads this instead of a key map directly, so touch and mouse+keyboard
@@ -106,8 +107,12 @@ interface NPCMarkerProps {
 function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerProps) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Mesh>(null);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const prevPosRef = useRef({ x: 0, z: 0 });
 
-  // Target position in world space - tweens toward this when npc.x/y change.
   const targetPos = useMemo(() => {
     const x = ((npc.x ?? 0) - GRID_W / 2) * UNIT;
     const z = ((npc.y ?? 0) - GRID_H / 2) * UNIT;
@@ -116,22 +121,47 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
 
   useFrame(({ clock }, delta) => {
     if (!groupRef.current) return;
-    // Lerp toward target (matches the 2D ~1.5s tween feel with slightly
-    // faster response because 3D positions update every 60s cycle).
-    const SPEED = 0.8; // higher = snappier
-    groupRef.current.position.x += (targetPos.x - groupRef.current.position.x) * Math.min(1, SPEED * delta);
-    groupRef.current.position.z += (targetPos.z - groupRef.current.position.z) * Math.min(1, SPEED * delta);
+    const SPEED = 0.8;
+    const g = groupRef.current;
+    const prev = prevPosRef.current;
+    g.position.x += (targetPos.x - g.position.x) * Math.min(1, SPEED * delta);
+    g.position.z += (targetPos.z - g.position.z) * Math.min(1, SPEED * delta);
 
-    // Bob head
-    if (headRef.current) {
-      const bob = Math.sin(clock.elapsedTime * 2 + npc.id) * 0.08;
-      headRef.current.position.y = Math.max(0.4, tileHeight) + 1.0 + bob;
+    // Movement detection for walk cycle + facing
+    const dx = g.position.x - prev.x;
+    const dz = g.position.z - prev.z;
+    const moving = dx * dx + dz * dz > 0.0001;
+    if (moving) {
+      const yaw = Math.atan2(dx, dz);
+      const cy = g.rotation.y;
+      let diff = yaw - cy;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      g.rotation.y = cy + diff * Math.min(1, 10 * delta);
     }
+    prevPosRef.current = { x: g.position.x, z: g.position.z };
+
+    const bob = Math.sin(clock.elapsedTime * 2 + npc.id) * 0.04;
+    if (headRef.current) headRef.current.position.y = 1.42 + bob;
+
+    // Walk cycle: legs + arms swing 180 degrees out of phase when moving,
+    // subtle sway when idle
+    const stridePhase = clock.elapsedTime * (moving ? 6 : 0.8) + npc.id;
+    const strideAmp = moving ? 0.65 : 0.08;
+    if (leftLegRef.current) leftLegRef.current.rotation.x = Math.sin(stridePhase) * strideAmp;
+    if (rightLegRef.current) rightLegRef.current.rotation.x = -Math.sin(stridePhase) * strideAmp;
+    if (leftArmRef.current) leftArmRef.current.rotation.x = -Math.sin(stridePhase) * strideAmp * 0.85;
+    if (rightArmRef.current) rightArmRef.current.rotation.x = Math.sin(stridePhase) * strideAmp * 0.85;
   });
 
   const color = npc.lane === 'sr' ? '#fb923c' : '#38bdf8';
   const dim = npc.condition === 'injured' || npc.condition === 'incapacitated';
-  const finalColor = dim ? new THREE.Color(color).lerp(new THREE.Color('#7a7a7a'), 0.55).getStyle() : color;
+  const bodyColor = dim ? new THREE.Color(color).lerp(new THREE.Color('#7a7a7a'), 0.55).getStyle() : color;
+  const legColor = '#2a2f3d';
+  const skinColor = dim ? '#8a8a8a' : '#d4a684';
+  const hairColor = dim ? '#5a5a5a' : '#2a1f15';
+
+  const base = Math.max(0.4, tileHeight);
 
   return (
     <group
@@ -153,8 +183,8 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
     >
       {/* Selection ring under the feet */}
       {isSelected && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, Math.max(0.4, tileHeight) + 0.06, 0]}>
-          <ringGeometry args={[0.4, 0.55, 24]} />
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, base + 0.06, 0]}>
+          <ringGeometry args={[0.45, 0.6, 24]} />
           <meshStandardMaterial
             color="#fde047"
             emissive="#fde047"
@@ -165,13 +195,92 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
           />
         </mesh>
       )}
-      <mesh position={[0, Math.max(0.4, tileHeight) + 0.45, 0]} castShadow>
-        <cylinderGeometry args={[0.22, 0.26, 0.8, 10]} />
-        <meshStandardMaterial color={finalColor} roughness={0.6} />
+
+      {/* Body (torso) - lane-colored tunic */}
+      <mesh position={[0, base + 0.95, 0]} castShadow>
+        <boxGeometry args={[0.5, 0.55, 0.28]} />
+        <meshStandardMaterial color={bodyColor} roughness={0.75} />
       </mesh>
-      <mesh ref={headRef} position={[0, Math.max(0.4, tileHeight) + 1.0, 0]} castShadow>
-        <sphereGeometry args={[0.2, 12, 12]} />
-        <meshStandardMaterial color={finalColor} roughness={0.5} />
+
+      {/* Head */}
+      <mesh ref={headRef} position={[0, base + 1.42, 0]} castShadow>
+        <boxGeometry args={[0.34, 0.32, 0.32]} />
+        <meshStandardMaterial color={skinColor} roughness={0.55} />
+      </mesh>
+
+      {/* Hair/helmet-cap on top of head */}
+      <mesh position={[0, base + 1.6, 0]} castShadow>
+        <boxGeometry args={[0.36, 0.12, 0.34]} />
+        <meshStandardMaterial color={hairColor} roughness={0.65} />
+      </mesh>
+
+      {/* Eyes - tiny dark squares */}
+      <mesh position={[-0.08, base + 1.44, 0.17]}>
+        <boxGeometry args={[0.05, 0.05, 0.02]} />
+        <meshStandardMaterial color="#0b0e14" />
+      </mesh>
+      <mesh position={[0.08, base + 1.44, 0.17]}>
+        <boxGeometry args={[0.05, 0.05, 0.02]} />
+        <meshStandardMaterial color="#0b0e14" />
+      </mesh>
+
+      {/* Left arm - pivoted at shoulder so rotation swings the whole arm */}
+      <group ref={leftArmRef} position={[-0.34, base + 1.14, 0]}>
+        <mesh position={[0, -0.28, 0]} castShadow>
+          <boxGeometry args={[0.16, 0.5, 0.16]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.75} />
+        </mesh>
+        {/* Hand tip */}
+        <mesh position={[0, -0.58, 0]} castShadow>
+          <boxGeometry args={[0.13, 0.1, 0.13]} />
+          <meshStandardMaterial color={skinColor} roughness={0.55} />
+        </mesh>
+      </group>
+
+      {/* Right arm */}
+      <group ref={rightArmRef} position={[0.34, base + 1.14, 0]}>
+        <mesh position={[0, -0.28, 0]} castShadow>
+          <boxGeometry args={[0.16, 0.5, 0.16]} />
+          <meshStandardMaterial color={bodyColor} roughness={0.75} />
+        </mesh>
+        <mesh position={[0, -0.58, 0]} castShadow>
+          <boxGeometry args={[0.13, 0.1, 0.13]} />
+          <meshStandardMaterial color={skinColor} roughness={0.55} />
+        </mesh>
+      </group>
+
+      {/* Left leg - pivot at hip */}
+      <group ref={leftLegRef} position={[-0.14, base + 0.66, 0]}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.55, 0.18]} />
+          <meshStandardMaterial color={legColor} roughness={0.8} />
+        </mesh>
+        <mesh position={[0, -0.61, 0.04]} castShadow>
+          <boxGeometry args={[0.2, 0.08, 0.24]} />
+          <meshStandardMaterial color="#1a1f28" roughness={0.9} />
+        </mesh>
+      </group>
+
+      {/* Right leg */}
+      <group ref={rightLegRef} position={[0.14, base + 0.66, 0]}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.55, 0.18]} />
+          <meshStandardMaterial color={legColor} roughness={0.8} />
+        </mesh>
+        <mesh position={[0, -0.61, 0.04]} castShadow>
+          <boxGeometry args={[0.2, 0.08, 0.24]} />
+          <meshStandardMaterial color="#1a1f28" roughness={0.9} />
+        </mesh>
+      </group>
+
+      {/* Lane badge - small glowing square on chest so team's visible at distance */}
+      <mesh position={[0, base + 1.0, 0.15]}>
+        <boxGeometry args={[0.12, 0.12, 0.02]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={0.4}
+        />
       </mesh>
     </group>
   );
@@ -339,7 +448,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
 // at y=0 under the terrain so clicks on any tile intersect it (3D tile
 // boxes also intersect, but we only care about xz - height-follow in
 // FPSController handles y on arrival).
-function WalkTargetPicker({ enabled }: { enabled: boolean }) {
+function WalkTargetPicker({ enabled, onSet }: { enabled: boolean; onSet?: () => void }) {
   const markerRef = useRef<THREE.Mesh>(null);
   useFrame(({ clock }) => {
     if (!markerRef.current) return;
@@ -365,6 +474,7 @@ function WalkTargetPicker({ enabled }: { enabled: boolean }) {
           walkTarget.x = e.point.x;
           walkTarget.z = e.point.z;
           walkTarget.setAt = performance.now();
+          onSet?.();
         }}
       >
         <planeGeometry args={[GRID_W * UNIT * 3, GRID_H * UNIT * 3]} />
@@ -633,7 +743,21 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
   const [locked, setLocked] = useState(false);
   const [hoveredNPC, setHoveredNPC] = useState<NPC | null>(null);
   const [selectedNPC, setSelectedNPC] = useState<NPC | null>(null);
+  const [soundOn, setSoundOn] = useState(false);
   const isTouch = useMemo(() => isTouchDevice(), []);
+
+  // Smithy anvil clink while in 3D - periodic chime every 4-7 seconds to
+  // suggest work happening at the forge. Only fires when sound is on.
+  useEffect(() => {
+    if (!soundOn) return;
+    const tick = () => {
+      if (!audio.isEnabled()) return;
+      audio.anvil();
+      setTimeout(tick, 4000 + Math.random() * 3000);
+    };
+    const id = setTimeout(tick, 3000 + Math.random() * 2000);
+    return () => clearTimeout(id);
+  }, [soundOn]);
 
   // Touch look: track single-finger drag outside the joystick area and
   // translate its delta into yaw/pitch in lookInput. Per-frame consumed
@@ -721,6 +845,18 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
     setLocked(false);
   }, []);
 
+  const toggleSound = useCallback(() => {
+    setSoundOn((on) => {
+      if (on) {
+        audio.disable();
+        return false;
+      }
+      audio.enable();
+      audio.click();
+      return true;
+    });
+  }, []);
+
   // Esc from FPS -> back to orbit
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -754,6 +890,13 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           <button className="mode-toggle" onClick={toggleMode}>
             {mode === 'orbit' ? 'Walk Mode' : 'Orbit Mode'}
           </button>
+          <button
+            className="sound-toggle"
+            onClick={toggleSound}
+            title={soundOn ? 'Mute' : 'Enable sound'}
+          >
+            {soundOn ? '🔊' : '🔇'}
+          </button>
           <button className="hud-exit" onClick={onExit}>
             ← Back to 2D
           </button>
@@ -780,7 +923,7 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         <SceneLighting />
         <WaterPlane />
         <Terrain tiles={tiles} />
-        <WalkTargetPicker enabled={mode === 'fps'} />
+        <WalkTargetPicker enabled={mode === 'fps'} onSet={() => audio.tap()} />
         {structures.map((s, i) => (
           <Structure key={`${s.key}-${i}`} placement={s} heightMap={heightAt} />
         ))}
