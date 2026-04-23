@@ -217,6 +217,62 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .card h2 .legend .dot.jr { background: var(--jr); }
 
 .map { grid-area: map; }
+
+.map-controls {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 2;
+}
+.map-controls button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 16px;
+  background: rgba(19, 24, 38, 0.85);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  line-height: 1;
+  font-weight: 700;
+}
+.map-controls button:hover {
+  background: var(--panel-2);
+  filter: none;
+}
+
+.focus-card {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  background: rgba(19, 24, 38, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  max-width: 260px;
+  font-size: 12px;
+  z-index: 2;
+}
+.focus-card .focus-name { font-weight: 700; font-size: 13px; }
+.focus-card .focus-role { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.focus-card .focus-status { margin-top: 4px; color: var(--text); line-height: 1.35; }
+.focus-card .focus-clear {
+  margin-top: 6px;
+  padding: 3px 8px;
+  font-size: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-weight: 500;
+}
+.focus-card .focus-clear:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
 .stats { grid-area: stats; }
 .npcs { grid-area: npcs; overflow-y: auto; }
 .logs { grid-area: logs; overflow-y: auto; }
