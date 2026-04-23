@@ -4,6 +4,7 @@ import { deriveStage } from '../lib/progression';
 
 interface Props {
   world: World;
+  aliveNPCs: number;
   autoSpeedMs: number;
   onAutoSpeedChange: (ms: number) => void;
   onAdvance: () => void;
@@ -21,6 +22,7 @@ const SPEED_OPTIONS: Array<{ label: string; ms: number }> = [
 
 export function Header({
   world,
+  aliveNPCs,
   autoSpeedMs,
   onAutoSpeedChange,
   onAdvance,
@@ -28,7 +30,11 @@ export function Header({
   lastSyncLabel,
   errorMessage,
 }: Props) {
+  // Stage is derived from the canonical world.population so it only bumps
+  // when a cycle advance commits. Header also shows alive NPCs so viewers
+  // can see mid-cycle growth before the pop number syncs.
   const stage = useMemo(() => deriveStage(world.population), [world.population]);
+  const mismatch = aliveNPCs !== world.population;
 
   return (
     <div className="header">
@@ -36,7 +42,12 @@ export function Header({
         <h1>{world.civ_name}</h1>
         <div className="subtitle">
           Co-led by Sr (Opportunist) + Jr (Architect) &middot; Cycle {world.cycle} &middot;{' '}
-          {world.population} alive
+          Pop {world.population}
+          {mismatch && (
+            <span style={{ color: 'var(--accent)', marginLeft: 6 }}>
+              ({aliveNPCs} alive, syncs next advance)
+            </span>
+          )}
         </div>
       </div>
 

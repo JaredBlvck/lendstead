@@ -48,6 +48,7 @@ export default function App() {
     <div className="app">
       <Header
         world={w}
+        aliveNPCs={allNPCs.filter((n) => n.alive).length}
         autoSpeedMs={autoSpeedMs}
         onAutoSpeedChange={setAutoSpeedMs}
         onAdvance={() => advance.mutate()}

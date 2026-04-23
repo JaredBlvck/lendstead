@@ -1,13 +1,23 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { pool } from "./db.js";
 
-const sql = readFileSync(
-  new URL("./migrations/001_init.sql", import.meta.url),
-  "utf8",
+const migrationsDir = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "migrations",
 );
 
 try {
-  await pool.query(sql);
+  const files = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+
+  for (const file of files) {
+    const sql = readFileSync(join(migrationsDir, file), "utf8");
+    await pool.query(sql);
+    console.log(`applied ${file}`);
+  }
   console.log("migrated");
 } catch (err) {
   console.error("migrate failed", err);
