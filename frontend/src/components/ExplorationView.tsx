@@ -14,10 +14,17 @@ import { useEvents } from '../hooks/useWorld';
 import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
 import { VirtualJoystick } from './VirtualJoystick';
 
-// Input state shared by keyboard + joystick. FPSController reads this
-// instead of a key map directly, so touch and mouse+keyboard both work.
+// Input state shared by keyboard + joystick + click-to-walk. FPSController
+// reads this instead of a key map directly, so touch and mouse+keyboard
+// both work. walkTarget is a one-shot - FPSController auto-moves toward
+// it and clears on arrival.
 const moveInput = { x: 0, y: 0 };
 const lookInput = { yaw: 0, pitch: 0 };
+const walkTarget: { x: number | null; z: number | null; setAt: number } = {
+  x: null,
+  z: null,
+  setAt: 0,
+};
 
 function isTouchDevice(): boolean {
   return typeof window !== 'undefined' && 'ontouchstart' in window;
@@ -293,6 +300,56 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
   );
 }
 
+// Large invisible pickable plane for click/tap-to-walk raycasting. Sits
+// at y=0 under the terrain so clicks on any tile intersect it (3D tile
+// boxes also intersect, but we only care about xz - height-follow in
+// FPSController handles y on arrival).
+function WalkTargetPicker({ enabled }: { enabled: boolean }) {
+  const markerRef = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!markerRef.current) return;
+    if (walkTarget.x == null) {
+      markerRef.current.visible = false;
+      return;
+    }
+    markerRef.current.visible = true;
+    markerRef.current.position.x = walkTarget.x;
+    markerRef.current.position.z = walkTarget.z!;
+    const pulse = 0.7 + 0.3 * Math.sin(clock.elapsedTime * 6);
+    markerRef.current.scale.setScalar(pulse);
+  });
+
+  return (
+    <>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0.02, 0]}
+        onPointerDown={(e) => {
+          if (!enabled) return;
+          e.stopPropagation();
+          walkTarget.x = e.point.x;
+          walkTarget.z = e.point.z;
+          walkTarget.setAt = performance.now();
+        }}
+      >
+        <planeGeometry args={[GRID_W * UNIT * 3, GRID_H * UNIT * 3]} />
+        <meshBasicMaterial visible={false} />
+      </mesh>
+      <mesh ref={markerRef} position={[0, 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.4, 0.55, 24]} />
+        <meshStandardMaterial
+          color="#5eead4"
+          emissive="#5eead4"
+          emissiveIntensity={1.5}
+          transparent
+          opacity={0.9}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </>
+  );
+}
+
 // ---------- EVENT MARKERS (Phase 5) ----------
 //
 // Lightweight 3D representations of storm / discovery / threat events.
@@ -435,6 +492,40 @@ function FPSController({ heightAt, enabled }: { heightAt: Map<string, number>; e
     if (Math.abs(moveInput.x) > 0.05 || Math.abs(moveInput.y) > 0.05) {
       velocity.current.add(fwd.clone().multiplyScalar(-moveInput.y));
       velocity.current.add(right.clone().multiplyScalar(moveInput.x));
+    }
+    // Click/tap-to-walk: auto-move toward walkTarget until within arrival
+    // radius. Keyboard or joystick input overrides (tap target clears on
+    // manual input so the user always has authority).
+    const manualInputActive =
+      velocity.current.lengthSq() > 0 ||
+      Math.abs(moveInput.x) > 0.05 ||
+      Math.abs(moveInput.y) > 0.05;
+    if (walkTarget.x != null && walkTarget.z != null) {
+      if (manualInputActive) {
+        walkTarget.x = null;
+        walkTarget.z = null;
+      } else {
+        const dx = walkTarget.x - camera.position.x;
+        const dz = walkTarget.z - camera.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 0.6) {
+          walkTarget.x = null;
+          walkTarget.z = null;
+        } else {
+          // Move forward in the target direction (ignore current facing)
+          const dir = new THREE.Vector3(dx, 0, dz).normalize();
+          velocity.current.add(dir);
+          // Smoothly rotate yaw to face direction of travel
+          const targetYaw = Math.atan2(-dx, -dz);
+          const cur = yaw.current;
+          let diff = targetYaw - cur;
+          while (diff > Math.PI) diff -= Math.PI * 2;
+          while (diff < -Math.PI) diff += Math.PI * 2;
+          yaw.current = cur + diff * Math.min(1, 4 * delta);
+          camera.rotation.order = 'YXZ';
+          camera.rotation.y = yaw.current;
+        }
+      }
     }
     if (velocity.current.lengthSq() > 0) {
       velocity.current.normalize().multiplyScalar(speed * delta);
@@ -620,10 +711,8 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             {mode === 'orbit'
               ? 'drag to orbit · scroll to zoom · right-drag to pan'
               : isTouch
-                ? 'joystick to move · drag to look · tap Orbit to exit'
-                : locked
-                  ? 'WASD to move · shift to sprint · Esc to orbit'
-                  : 'click canvas to lock pointer + move'}
+                ? 'tap to walk · joystick for precision · drag empty space to look'
+                : 'click to walk · WASD + shift for precision · click blank for free look'}
           </div>
           <button className="mode-toggle" onClick={toggleMode}>
             {mode === 'orbit' ? 'Walk Mode' : 'Orbit Mode'}
@@ -654,6 +743,7 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         <SceneLighting />
         <WaterPlane />
         <Terrain tiles={tiles} />
+        <WalkTargetPicker enabled={mode === 'fps'} />
         {structures.map((s, i) => (
           <Structure key={`${s.key}-${i}`} placement={s} heightMap={heightAt} />
         ))}
