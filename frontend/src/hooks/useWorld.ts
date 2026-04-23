@@ -1,5 +1,4 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
 import { api } from '../api';
 
 export function useWorld() {
@@ -37,23 +36,26 @@ export function useAdvanceCycle() {
   });
 }
 
-// Auto-cycle ticker. Until backend /api/auto-cycle/{start,stop} ship,
-// this is pure client-side: fires POST /api/cycle/advance every
-// intervalMs while enabled. Zero on intervalMs disables.
-export function useAutoCycle(intervalMs: number) {
-  const advance = useAdvanceCycle();
-  const advanceRef = useRef(advance);
-  advanceRef.current = advance;
+// Backend-driven auto-cycle. Picker fires /start or /stop; the server
+// timer owns execution. World/npcs/logs queries still refetch on their
+// own 3s cadence, so the dashboard reflects server state without any
+// client-side interval.
+export function useAutoCycleStatus() {
+  return useQuery({ queryKey: ['auto-cycle'], queryFn: api.autoCycleStatus });
+}
 
-  useEffect(() => {
-    if (!intervalMs) return;
-    const id = window.setInterval(() => {
-      if (!advanceRef.current.isPending) {
-        advanceRef.current.mutate();
-      }
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [intervalMs]);
-
-  return advance;
+export function useAutoCycleControl() {
+  const qc = useQueryClient();
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['auto-cycle'] });
+  };
+  const start = useMutation({
+    mutationFn: (interval_sec: number) => api.autoCycleStart(interval_sec),
+    onSuccess: invalidate,
+  });
+  const stop = useMutation({
+    mutationFn: api.autoCycleStop,
+    onSuccess: invalidate,
+  });
+  return { start, stop };
 }

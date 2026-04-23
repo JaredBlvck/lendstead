@@ -53,6 +53,13 @@ export interface CycleEvent {
   created_at: string;
 }
 
+// Mirrors /api/auto-cycle/{status,start,stop} response.
+export interface AutoCycleStatus {
+  running: boolean;
+  interval_sec: number | null;
+  started_at: string | null;
+}
+
 export interface CycleAdvanceResponse {
   world: World;
   delta: {

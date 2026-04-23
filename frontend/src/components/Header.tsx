@@ -6,6 +6,8 @@ interface Props {
   world: World;
   aliveNPCs: number;
   autoSpeedMs: number;
+  autoPending: boolean;
+  autoStartedAt: string | null;
   onAutoSpeedChange: (ms: number) => void;
   onAdvance: () => void;
   advancing: boolean;
@@ -24,6 +26,8 @@ export function Header({
   world,
   aliveNPCs,
   autoSpeedMs,
+  autoPending,
+  autoStartedAt,
   onAutoSpeedChange,
   onAdvance,
   advancing,
@@ -69,17 +73,19 @@ export function Header({
           </div>
         </div>
 
-        <div className="speed-picker">
+        <div className="speed-picker" title={autoStartedAt ? `Server ticker started ${new Date(autoStartedAt).toLocaleTimeString()}` : 'Backend-driven auto-cycle'}>
           <span className="speed-label">AUTO</span>
           {SPEED_OPTIONS.map((opt) => (
             <button
               key={opt.ms}
               className={`speed-btn ${autoSpeedMs === opt.ms ? 'on' : ''}`}
               onClick={() => onAutoSpeedChange(opt.ms)}
+              disabled={autoPending}
             >
               {opt.label}
             </button>
           ))}
+          {autoSpeedMs > 0 && <span className="speed-dot" aria-hidden="true" />}
         </div>
 
         <button className="advance-btn" onClick={onAdvance} disabled={advancing}>

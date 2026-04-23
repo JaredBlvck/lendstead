@@ -1,5 +1,11 @@
-import { useState } from 'react';
-import { useWorld, useNPCs, useLogs, useAutoCycle } from './hooks/useWorld';
+import {
+  useWorld,
+  useNPCs,
+  useLogs,
+  useAdvanceCycle,
+  useAutoCycleStatus,
+  useAutoCycleControl,
+} from './hooks/useWorld';
 import { GameMap } from './components/GameMap';
 import { Header } from './components/Header';
 import { StatsCard } from './components/StatsCard';
@@ -7,15 +13,38 @@ import { NPCList } from './components/NPCList';
 import { LogsFeed } from './components/LogsFeed';
 
 export default function App() {
-  const [autoSpeedMs, setAutoSpeedMs] = useState(0);
-
   const world = useWorld();
   const npcs = useNPCs();
   const logs = useLogs();
-  const advance = useAutoCycle(autoSpeedMs);
+  const manualAdvance = useAdvanceCycle();
+
+  // Backend owns auto-cycle execution. UI picks the speed, server runs the
+  // ticker, status query reflects what's actually running. World/npcs/logs
+  // still poll every 3s so server advances appear naturally.
+  const autoStatus = useAutoCycleStatus();
+  const autoCtl = useAutoCycleControl();
+
+  const currentSpeedMs =
+    autoStatus.data?.running && autoStatus.data?.interval_sec
+      ? autoStatus.data.interval_sec * 1000
+      : 0;
+
+  const onAutoSpeedChange = (ms: number) => {
+    if (ms === 0) {
+      autoCtl.stop.mutate();
+    } else {
+      autoCtl.start.mutate(Math.max(1, Math.round(ms / 1000)));
+    }
+  };
 
   const loading = world.isLoading || npcs.isLoading || logs.isLoading;
-  const error = world.error || npcs.error || logs.error || advance.error;
+  const error =
+    world.error ||
+    npcs.error ||
+    logs.error ||
+    manualAdvance.error ||
+    autoCtl.start.error ||
+    autoCtl.stop.error;
 
   if (loading && !world.data) {
     return (
@@ -43,16 +72,20 @@ export default function App() {
   const w = world.data;
   const allNPCs = npcs.data ?? [];
   const allLogs = logs.data ?? [];
+  const autoPending =
+    autoCtl.start.isPending || autoCtl.stop.isPending;
 
   return (
     <div className="app">
       <Header
         world={w}
         aliveNPCs={allNPCs.filter((n) => n.alive).length}
-        autoSpeedMs={autoSpeedMs}
-        onAutoSpeedChange={setAutoSpeedMs}
-        onAdvance={() => advance.mutate()}
-        advancing={advance.isPending}
+        autoSpeedMs={currentSpeedMs}
+        autoPending={autoPending}
+        autoStartedAt={autoStatus.data?.started_at ?? null}
+        onAutoSpeedChange={onAutoSpeedChange}
+        onAdvance={() => manualAdvance.mutate()}
+        advancing={manualAdvance.isPending}
         lastSyncLabel={new Date(w.updated_at).toLocaleTimeString()}
         errorMessage={error instanceof Error ? error.message : undefined}
       />

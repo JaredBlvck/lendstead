@@ -1,4 +1,4 @@
-import type { World, NPC, LogEntry, CycleEvent, CycleAdvanceResponse, Lane } from './types';
+import type { World, NPC, LogEntry, CycleEvent, CycleAdvanceResponse, Lane, AutoCycleStatus } from './types';
 
 // VITE_API_URL set on Railway frontend service to the backend's public URL.
 // Local dev falls back to localhost:3000 where the backend runs.
@@ -25,6 +25,14 @@ export const api = {
     req<CycleEvent[]>(`/api/events${sinceISO ? `?since=${encodeURIComponent(sinceISO)}` : ''}`),
   advanceCycle: () =>
     req<CycleAdvanceResponse>('/api/cycle/advance', { method: 'POST' }),
+  autoCycleStatus: () => req<AutoCycleStatus>('/api/auto-cycle/status'),
+  autoCycleStart: (interval_sec: number) =>
+    req<AutoCycleStatus>('/api/auto-cycle/start', {
+      method: 'POST',
+      body: JSON.stringify({ interval_sec }),
+    }),
+  autoCycleStop: () =>
+    req<AutoCycleStatus>('/api/auto-cycle/stop', { method: 'POST' }),
   decide: (body: {
     leader: Lane;
     cycle: number;
