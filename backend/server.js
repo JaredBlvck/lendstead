@@ -43,6 +43,8 @@ import {
   affinityPairKey,
   affinityDelta,
   newAffinityMilestones,
+  AFFINITY_DECAY_GRACE_CYCLES,
+  AFFINITY_DECAY_PER_CYCLE,
 } from "./interactions.js";
 
 const app = express();
@@ -405,6 +407,17 @@ async function runCycleAdvance() {
         ],
       );
     }
+
+    // Affinity decay: pairs that haven't interacted for AFFINITY_DECAY_GRACE_CYCLES
+    // lose AFFINITY_DECAY_PER_CYCLE per cycle. Bonds fade without reinforcement.
+    // Disjoint from the per-interaction upsert below (those touch last_cycle =
+    // nextCycle, decay only touches last_cycle <= nextCycle - grace).
+    await client.query(
+      `UPDATE npc_affinity
+         SET score = GREATEST(0, score - $1::numeric), updated_at = now()
+       WHERE last_cycle <= $2`,
+      [AFFINITY_DECAY_PER_CYCLE, nextCycle - AFFINITY_DECAY_GRACE_CYCLES],
+    );
 
     // Affinity: every interaction updates a per-pair score. Crossing a
     // milestone (acquainted / friendly / close / bonded) emits a narrative

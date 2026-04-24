@@ -22,6 +22,14 @@ export const AFFINITY_DELTA = {
   mishap: 0, // an accident doesn't damage the bond by itself
 };
 
+// Affinity decay: bonds fade without reinforcement. After a grace period
+// (AFFINITY_DECAY_GRACE_CYCLES) of no interaction, each subsequent cycle
+// subtracts AFFINITY_DECAY_PER_CYCLE from the score. Asymptotic: high-score
+// pairs take longer to fade to zero, mirroring how deep friendships erode
+// more slowly than acquaintances. Never goes negative.
+export const AFFINITY_DECAY_GRACE_CYCLES = 10;
+export const AFFINITY_DECAY_PER_CYCLE = 0.01;
+
 export const AFFINITY_MILESTONES = [
   { key: "acquainted", threshold: 0.2 },
   { key: "friendly", threshold: 0.5 },
