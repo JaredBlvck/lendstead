@@ -17,6 +17,16 @@ import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
 import { VirtualJoystick } from './VirtualJoystick';
 import { audio } from '../lib/audio';
 import { generateFlavor } from '../lib/flavor';
+import {
+  buildAbilityVFX,
+  buildBreakthroughEvents,
+  type AbilityVFX,
+  type BreakthroughEvent,
+} from '../lib/abilities';
+import { RulerAvatar } from './RulerAvatar';
+import { AbilityVFXLayer } from './AbilityVFXLayer';
+import { BreakthroughBanner } from './BreakthroughBanner';
+import { EnergyHUD } from './EnergyHUD';
 
 // Input state shared by keyboard + joystick + click-to-walk. FPSController
 // reads this instead of a key map directly, so touch and mouse+keyboard
@@ -413,12 +423,9 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
     );
   }
   if (/outpost|camp|central/.test(key)) {
-    // Central camp becomes a TEMPLE - stepped pyramid with glowing top,
-    // dominant focal point. Outposts stay as tent clusters.
-    const isCentral = /central/i.test(key);
-    if (isCentral) {
-      return <Temple position={[wx, baseY, wz]} />;
-    }
+    // Central camp handled as Temple at top level in ExplorationView
+    // (needs world energy access). Skip here.
+    if (/central/i.test(key)) return null;
     return (
       <group position={[wx, baseY, wz]}>
         <mesh position={[-0.35, 0.5, 0]} castShadow>
@@ -608,7 +615,13 @@ function EventMarker({ evt, baseHeight }: { evt: DisplayEvent; baseHeight: numbe
 // Three-stepped stone pyramid with an emissive spire and rising particle
 // sparks. The dominant structure on the island - visible from anywhere
 // thanks to height + bloom.
-function Temple({ position }: { position: [number, number, number] }) {
+function Temple({
+  position,
+  energyLevel = 0.5,
+}: {
+  position: [number, number, number];
+  energyLevel?: number;
+}) {
   const spireRef = useRef<THREE.Mesh>(null);
   const particlesRef = useRef<THREE.Points>(null);
 
@@ -628,9 +641,12 @@ function Temple({ position }: { position: [number, number, number] }) {
 
   useFrame(({ clock }, delta) => {
     if (spireRef.current) {
-      const pulse = 2.5 + Math.sin(clock.elapsedTime * 2) * 0.8;
+      // Intensity scales with energy (normalized 0..1). High energy = bright
+      // fast-rotating spire; depleted = dim slow rotation.
+      const base = 1.2 + energyLevel * 2.5;
+      const pulse = base + Math.sin(clock.elapsedTime * (1.5 + energyLevel * 2)) * (0.4 + energyLevel * 0.6);
       (spireRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = pulse;
-      spireRef.current.rotation.y += delta * 0.4;
+      spireRef.current.rotation.y += delta * (0.2 + energyLevel * 0.6);
     }
     if (particlesRef.current) {
       const pos = particleGeom.attributes.position.array as Float32Array;
@@ -1198,15 +1214,22 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
 
   const eventsQuery = useEvents();
   const firstSeenRef = useRef<Map<number, number>>(new Map());
+  const abilityFirstSeenRef = useRef<Map<number, number>>(new Map());
+  const breakFirstSeenRef = useRef<Map<number, number>>(new Map());
   const [displayEvents, setDisplayEvents] = useState<DisplayEvent[]>([]);
+  const [abilityVFX, setAbilityVFX] = useState<AbilityVFX[]>([]);
+  const [breakthroughs, setBreakthroughs] = useState<BreakthroughEvent[]>([]);
 
   useEffect(() => {
     const rebuild = () => {
       const now = performance.now();
-      setDisplayEvents(buildDisplayEvents(eventsQuery.data ?? [], firstSeenRef.current, now));
+      const src = eventsQuery.data ?? [];
+      setDisplayEvents(buildDisplayEvents(src, firstSeenRef.current, now));
+      setAbilityVFX(buildAbilityVFX(src, abilityFirstSeenRef.current, now));
+      setBreakthroughs(buildBreakthroughEvents(src, breakFirstSeenRef.current, now));
     };
     rebuild();
-    const id = window.setInterval(rebuild, 1500);
+    const id = window.setInterval(rebuild, 500);
     return () => window.clearInterval(id);
   }, [eventsQuery.data]);
 
@@ -1335,6 +1358,12 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         {structures.map((s, i) => (
           <Structure key={`${s.key}-${i}`} placement={s} heightMap={heightAt} />
         ))}
+
+        {/* Temple at central camp position with energy-driven reactivity */}
+        <Temple
+          position={[0, heightAt.get(`${Math.round(GRID_W * 0.5)},${Math.round(GRID_H * 0.5)}`) ?? 0.5, 0]}
+          energyLevel={((world.sr_energy ?? 50) + (world.jr_energy ?? 50)) / 200}
+        />
         {displayEvents.map((evt) => (
           <EventMarker
             key={evt.id}
@@ -1342,6 +1371,23 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             baseHeight={heightAt.get(`${evt.x},${evt.y}`) ?? 0.5}
           />
         ))}
+
+        {/* Ability VFX layer (Magic Awakening, v7.3+) */}
+        <AbilityVFXLayer vfx={abilityVFX} npcs={aliveNPCs} heightAt={heightAt} />
+
+        {/* Ruler avatars flanking the temple - Sr and Jr as visible deities.
+            Aura intensity tied to their per-leader energy pool. Rendered
+            whether or not energy data is present (defaults to 50). */}
+        <RulerAvatar
+          position={[GRID_W * 0.5 * UNIT - GRID_W / 2 * UNIT + 4, 1.5, 0]}
+          lane="sr"
+          energy={world.sr_energy ?? 50}
+        />
+        <RulerAvatar
+          position={[GRID_W * 0.5 * UNIT - GRID_W / 2 * UNIT - 4, 1.5, 0]}
+          lane="jr"
+          energy={world.jr_energy ?? 50}
+        />
         {aliveNPCs.map((npc) => (
           <NPCMarker
             key={npc.id}
@@ -1469,6 +1515,12 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
 
       {/* Minimap - top-down quick-glance grid */}
       <Minimap tiles={tiles} npcs={aliveNPCs} />
+
+      {/* Magic Awakening HUD + breakthrough banner */}
+      <EnergyHUD srEnergy={world.sr_energy} jrEnergy={world.jr_energy} />
+      {breakthroughs.length > 0 && (
+        <BreakthroughBanner breakthrough={breakthroughs[breakthroughs.length - 1]} />
+      )}
     </div>
   );
 }

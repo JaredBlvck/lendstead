@@ -14,6 +14,20 @@ import {
   deriveShelterSites,
   rescueStrandedNpcs,
 } from "./engine.js";
+import {
+  ABILITIES,
+  REGEN_BASE,
+  REGEN_WITH_TEMPLE,
+  ENERGY_CAP,
+  abilityUnlocked,
+  onCooldown,
+  validateAbility,
+  computeBreakthroughs,
+  resourceAmpMultipliers,
+  protectionAt,
+  overuseDetection,
+  flavorSummary,
+} from "./magic.js";
 
 const app = express();
 app.use(cors());
@@ -248,8 +262,43 @@ async function runCycleAdvance() {
       "SELECT * FROM npcs WHERE alive = true AND condition != 'dead'",
     );
 
+    // ---- MAGIC: expire terrain_shape abilities (revert tiles), load active ----
+    let terrainWorking = current.terrain || [];
+    const { rows: expiringTerrainShapes } = await client.query(
+      `SELECT * FROM abilities
+        WHERE ability_name = 'terrain_shape'
+          AND expires_cycle IS NOT NULL
+          AND expires_cycle = $1`,
+      [nextCycle],
+    );
+    let terrainChangedThisAdvance = false;
+    for (const a of expiringTerrainShapes) {
+      const td = a.target_data || {};
+      const orig = td.original_tile;
+      if (!Array.isArray(td.tile) || !orig) continue;
+      const [tx, ty] = td.tile;
+      terrainWorking = terrainWorking.map((t) =>
+        t.x === tx && t.y === ty
+          ? { ...t, type: orig.type, height: orig.height }
+          : t,
+      );
+      terrainChangedThisAdvance = true;
+    }
+    if (terrainChangedThisAdvance) {
+      await client.query("UPDATE world SET terrain = $1::jsonb WHERE id = $2", [
+        JSON.stringify(terrainWorking),
+        current.id,
+      ]);
+    }
+
+    const { rows: activeAbilities } = await client.query(
+      `SELECT * FROM abilities
+        WHERE expires_cycle IS NULL OR expires_cycle > $1`,
+      [nextCycle],
+    );
+
     // ---- Position jitter ----
-    const terrainForJitter = current.terrain || [];
+    const terrainForJitter = terrainWorking;
     const position_deltas = [];
     for (const n of aliveNpcs) {
       if (n.condition === "incapacitated") continue; // injured-heavy stay put
@@ -284,13 +333,14 @@ async function runCycleAdvance() {
     const dry_streak = Math.max(0, prevCycle - lastEventCycle);
 
     // ---- Roll events; tag severity; scale radius ----
-    const terrain = current.terrain || [];
+    const terrain = terrainWorking;
     const rolled = rollEvents({
       cycle: nextCycle,
       npcs: aliveNpcs,
       terrain,
       dry_streak,
     });
+    const rolledKept = [];
     for (const evt of rolled) {
       const sameKindCount = countByKind(evt.kind);
       const severity = computeSeverity(evt.kind, sameKindCount);
@@ -300,7 +350,37 @@ async function runCycleAdvance() {
           evt.payload.radius * severityMultiplier(severity),
         );
       }
+
+      // Magic protection: events whose tile/center is inside an active
+      // protection aura either cancel or downgrade severity.
+      const centerTile = Array.isArray(evt.payload.center)
+        ? evt.payload.center
+        : Array.isArray(evt.payload.tile)
+          ? evt.payload.tile
+          : null;
+      if (centerTile) {
+        const prot = protectionAt(
+          activeAbilities,
+          centerTile[0],
+          centerTile[1],
+        );
+        if (prot.protected) {
+          if (evt.kind === "storm" && prot.mode === "storm_shield") {
+            evt.payload.protected_by = "storm_shield";
+            evt.payload.severity = "minor"; // downgraded
+          } else if (
+            evt.kind === "threat_sighted" &&
+            prot.mode === "threat_deterrent"
+          ) {
+            evt.payload.protected_by = "threat_deterrent";
+            evt.payload.severity = "minor";
+          }
+        }
+      }
+      rolledKept.push(evt);
     }
+    rolled.length = 0;
+    rolled.push(...rolledKept);
 
     // ---- Compute consequences (pre-apply) ----
     const shelterSites = deriveShelterSites(current.infrastructure);
@@ -361,6 +441,36 @@ async function runCycleAdvance() {
       infrastructure: current.infrastructure,
       prevBalance,
     });
+
+    // Magic resource_amp: multiply production if an active resource_amp of
+    // matching kind is running. Multiplier is max over all active stacks.
+    const ampMults = resourceAmpMultipliers(activeAbilities);
+    if (ampMults.food !== 1.0) {
+      balance.food_production = Number(
+        (balance.food_production * ampMults.food).toFixed(2),
+      );
+      balance.food_balance = Number(
+        (balance.food_production - balance.food_consumption).toFixed(2),
+      );
+      balance.food_deficit_days =
+        balance.food_balance < 0
+          ? Math.min(10, (prevBalance.food_deficit_days || 0) + 1)
+          : 0;
+      balance.food_amp_active = ampMults.food;
+    }
+    if (ampMults.water !== 1.0) {
+      balance.water_production = Number(
+        (balance.water_production * ampMults.water).toFixed(2),
+      );
+      balance.water_balance = Number(
+        (balance.water_production - balance.water_consumption).toFixed(2),
+      );
+      balance.water_deficit_days =
+        balance.water_balance < 0
+          ? Math.min(10, (prevBalance.water_deficit_days || 0) + 1)
+          : 0;
+      balance.water_amp_active = ampMults.water;
+    }
 
     // ---- Deficit effects ----
     if (balance.food_deficit_days > 3) {
@@ -510,12 +620,111 @@ async function runCycleAdvance() {
       water_balance: balance.water_balance,
       water_deficit_days: balance.water_deficit_days,
     };
+    if (balance.food_amp_active)
+      newResources.food_amp_active = balance.food_amp_active;
+    if (balance.water_amp_active)
+      newResources.water_amp_active = balance.water_amp_active;
+
+    // ---- MAGIC: energy regen + breakthroughs + overuse ----
+    const infraTokensStr = JSON.stringify(current.infrastructure || {});
+    const templeActive = /temple/i.test(infraTokensStr);
+    const regen = templeActive ? REGEN_WITH_TEMPLE : REGEN_BASE;
+    const srEnergyNext = Math.min(
+      ENERGY_CAP,
+      Number(current.sr_energy || 0) + regen,
+    );
+    const jrEnergyNext = Math.min(
+      ENERGY_CAP,
+      Number(current.jr_energy || 0) + regen,
+    );
+
+    // Breakthroughs: any unlocked ability for either leader not previously
+    // in world.breakthroughs fires a breakthrough event on this advance.
+    const eventsSurvivedRow = await client.query(
+      "SELECT COUNT(*)::int AS n FROM events WHERE kind IN ('storm','discovery','threat_sighted')",
+    );
+    const stateForUnlocks = {
+      population: pop,
+      zones_claimed: Array.isArray(current.infrastructure?.claims)
+        ? current.infrastructure.claims.length
+        : 0,
+      events_survived: eventsSurvivedRow.rows[0].n,
+      cycle: nextCycle,
+    };
+    const newBreakthroughs = computeBreakthroughs(
+      stateForUnlocks,
+      current.breakthroughs || [],
+    );
+    const allBreakthroughs = [
+      ...(current.breakthroughs || []),
+      ...newBreakthroughs,
+    ];
+
+    // Overuse: if either leader used the same ability ≥6 times in the last 10
+    // cycles, drift ruler_trust slightly down for a random subset of NPCs.
+    const overuseConsequences = [];
+    const { rows: overuseRecent } = await client.query(
+      "SELECT leader, ability_name, cycle_used FROM abilities WHERE cycle_used >= $1",
+      [Math.max(0, nextCycle - 10)],
+    );
+    for (const leader of ["sr", "jr"]) {
+      const o = overuseDetection(overuseRecent, leader, nextCycle, 10);
+      if (!o.overuse) continue;
+      const { rows: trustVictims } = await client.query(
+        `SELECT id, name FROM npcs WHERE alive = true AND condition != 'dead'
+         ORDER BY random() LIMIT 3`,
+      );
+      for (const v of trustVictims) {
+        await client.query(
+          "UPDATE npcs SET ruler_trust = GREATEST(0, ruler_trust + $1) WHERE id = $2",
+          [o.trust_drift, v.id],
+        );
+      }
+      overuseConsequences.push({
+        type: "overuse_distrust",
+        leader,
+        count: o.count,
+        trust_drift_applied: o.trust_drift,
+        victim_count: trustVictims.length,
+      });
+    }
+
     const updated = await client.query(
       `UPDATE world SET cycle = $1, population = $2, resources = $3::jsonb,
+                        sr_energy = $4, jr_energy = $5,
+                        breakthroughs = $6::jsonb,
                         updated_at = now()
-         WHERE id = $4 RETURNING *`,
-      [nextCycle, pop, newResources, current.id],
+         WHERE id = $7 RETURNING *`,
+      [
+        nextCycle,
+        pop,
+        newResources,
+        srEnergyNext,
+        jrEnergyNext,
+        JSON.stringify(allBreakthroughs),
+        current.id,
+      ],
     );
+
+    // Emit a breakthrough event per newly-unlocked ability.
+    for (const b of newBreakthroughs) {
+      await client.query(
+        `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'breakthrough', $2)`,
+        [
+          nextCycle,
+          {
+            leader: b.leader,
+            unlocks: b.unlocks,
+            description: `${b.leader.toUpperCase()} awakens — ${b.unlocks} unlocked`,
+            threshold: {
+              pop: stateForUnlocks.population,
+              zones_claimed: stateForUnlocks.zones_claimed,
+              events_survived: stateForUnlocks.events_survived,
+            },
+          },
+        ],
+      );
+    }
 
     await client.query(
       `INSERT INTO cycles (n) VALUES ($1) ON CONFLICT (n) DO NOTHING`,
@@ -615,6 +824,10 @@ async function runCycleAdvance() {
         position_deltas,
         consequences: allConsequences,
         balance,
+        breakthroughs_unlocked: newBreakthroughs,
+        overuse: overuseConsequences,
+        active_abilities: activeAbilities.length,
+        terrain_reverts: expiringTerrainShapes.length,
       },
       events: [advanceEvent.rows[0], ...persistedRolled],
     };
@@ -681,6 +894,218 @@ app.get("/api/auto-cycle/status", (_req, res) => {
     interval_sec: autoCycle.interval_sec,
     started_at: autoCycle.started_at,
   });
+});
+
+// === MAGIC / ABILITIES ===
+
+// GET /api/abilities?leader=sr|jr&since=cycle
+app.get("/api/abilities", async (req, res, next) => {
+  try {
+    const leader = req.query.leader;
+    const since = Number(req.query.since);
+    const clauses = [];
+    const params = [];
+    if (leader === "sr" || leader === "jr") {
+      params.push(leader);
+      clauses.push(`leader = $${params.length}`);
+    }
+    if (Number.isFinite(since)) {
+      params.push(since);
+      clauses.push(`cycle_used >= $${params.length}`);
+    }
+    const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
+    const { rows } = await pool.query(
+      `SELECT * FROM abilities ${where} ORDER BY cycle_used DESC, id DESC LIMIT 200`,
+      params,
+    );
+    res.json(rows);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/abilities
+// body: { leader: 'sr'|'jr', ability_name, target_data, duration_cycles? }
+app.post("/api/abilities", async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const {
+      leader,
+      ability_name,
+      target_data = {},
+      duration_cycles,
+    } = req.body || {};
+
+    await client.query("BEGIN");
+
+    const { rows: worldRows } = await client.query(
+      "SELECT * FROM world ORDER BY id DESC LIMIT 1",
+    );
+    const world = worldRows[0];
+    if (!world) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "no world seeded" });
+    }
+
+    const claims = Array.isArray(world.infrastructure?.claims)
+      ? world.infrastructure.claims.length
+      : 0;
+    const { rows: evCount } = await client.query(
+      "SELECT COUNT(*)::int AS n FROM events WHERE kind IN ('storm','discovery','threat_sighted')",
+    );
+    const events_survived = evCount[0].n;
+
+    const state = {
+      population: world.population,
+      zones_claimed: claims,
+      events_survived,
+      cycle: world.cycle,
+    };
+
+    const energyAvailable = Number(
+      leader === "sr" ? world.sr_energy : world.jr_energy,
+    );
+    const { rows: recentAbilities } = await client.query(
+      "SELECT leader, ability_name, cycle_used FROM abilities WHERE cycle_used >= $1",
+      [world.cycle - 12],
+    );
+
+    const onCd = onCooldown(recentAbilities, leader, ability_name, world.cycle);
+    const unlocked = ABILITIES[ability_name]
+      ? abilityUnlocked(ability_name, state)
+      : false;
+
+    const validation = validateAbility({
+      leader,
+      ability_name,
+      target_data,
+      energyAvailable,
+      onCd,
+      unlocked,
+    });
+    if (!validation.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        applied: false,
+        error: validation.error,
+        reason: validation.error,
+      });
+    }
+
+    const spec = ABILITIES[ability_name];
+    const duration = Math.max(
+      1,
+      Math.min(40, Number(duration_cycles) || spec.default_duration),
+    );
+    const expires_cycle = world.cycle + duration;
+
+    // Final target_data with enriched fields (duration + original snapshots for
+    // terrain_shape reversion).
+    let finalTarget = { ...target_data, duration_cycles: duration };
+
+    if (ability_name === "terrain_shape") {
+      const [tx, ty] = target_data.tile;
+      const terrain = world.terrain || [];
+      const original = terrain.find((t) => t.x === tx && t.y === ty) || null;
+      finalTarget.original_tile = original
+        ? { type: original.type, height: original.height }
+        : null;
+
+      // Apply immediately: mutate tile in-place, persist.
+      const newTerrain = terrain.map((t) =>
+        t.x === tx && t.y === ty
+          ? {
+              ...t,
+              type: target_data.new_type,
+              height: Number(target_data.new_height.toFixed(3)),
+            }
+          : t,
+      );
+      await client.query("UPDATE world SET terrain = $1::jsonb WHERE id = $2", [
+        JSON.stringify(newTerrain),
+        world.id,
+      ]);
+    }
+
+    if (ability_name === "npc_influence") {
+      // Instant morale + trust nudges on affected NPCs.
+      const ids = target_data.affected_npc_ids || [];
+      const moraleShift = Number(target_data.morale_shift || 0);
+      const trustShift = Number(target_data.trust_shift || 0);
+      for (const id of ids) {
+        const { rows: nrow } = await client.query(
+          "SELECT morale, ruler_trust FROM npcs WHERE id = $1",
+          [id],
+        );
+        if (!nrow[0]) continue;
+        let m = nrow[0].morale;
+        if (moraleShift > 0)
+          m = m === "low" ? "med" : m === "med" ? "high" : "high";
+        else if (moraleShift < 0)
+          m = m === "high" ? "med" : m === "med" ? "low" : "low";
+        const newTrust = Math.max(
+          0,
+          Math.min(1, Number(nrow[0].ruler_trust) + trustShift),
+        );
+        await client.query(
+          "UPDATE npcs SET morale = $1, ruler_trust = $2 WHERE id = $3",
+          [m, newTrust, id],
+        );
+      }
+    }
+
+    const effectSummary = flavorSummary(ability_name, finalTarget);
+    const energyAfter = Math.max(0, energyAvailable - spec.energy_cost);
+
+    const { rows: abRows } = await client.query(
+      `INSERT INTO abilities (leader, ability_name, target_data, energy_cost, cycle_used, expires_cycle, effect_summary)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7) RETURNING *`,
+      [
+        leader,
+        ability_name,
+        finalTarget,
+        spec.energy_cost,
+        world.cycle,
+        expires_cycle,
+        effectSummary,
+      ],
+    );
+
+    // Drain energy on the right leader column.
+    const energyCol = leader === "sr" ? "sr_energy" : "jr_energy";
+    await client.query(
+      `UPDATE world SET ${energyCol} = $1, updated_at = now() WHERE id = $2`,
+      [energyAfter, world.id],
+    );
+
+    // Emit an 'ability' event so the frontend event stream picks it up for VFX.
+    const { rows: evtRows } = await client.query(
+      `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'ability', $2) RETURNING *`,
+      [
+        world.cycle,
+        {
+          leader,
+          ability_name,
+          target_data: finalTarget,
+          expires_cycle,
+          effect_summary: effectSummary,
+        },
+      ],
+    );
+
+    await client.query("COMMIT");
+    res.json({
+      applied: true,
+      ability: abRows[0],
+      energy_remaining: energyAfter,
+      event: evtRows[0],
+    });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(e);
+  } finally {
+    client.release();
+  }
 });
 
 // Error handler

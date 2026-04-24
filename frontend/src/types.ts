@@ -8,9 +8,27 @@ export interface World {
   infrastructure: Record<string, number>;
   civ_name: string;
   updated_at: string;
-  // Populated once backend ships tile-grid column. Optional so the
-  // frontend falls back to client-side terrain generation until then.
   terrain?: Array<{ x: number; y: number; type: string; height?: number }>;
+  // Magic Awakening (v7.3+). Per-leader energy pools populated once
+  // backend migration 005 lands. Optional so rendering degrades cleanly
+  // until then.
+  sr_energy?: number;
+  jr_energy?: number;
+  breakthroughs?: string[];
+}
+
+export type AbilityName = 'terrain_shape' | 'resource_amp' | 'npc_influence' | 'protection';
+
+export interface AbilityRecord {
+  id: number;
+  leader: 'sr' | 'jr';
+  ability_name: AbilityName;
+  target_data: Record<string, unknown>;
+  energy_cost: number;
+  cycle_used: number;
+  expires_cycle: number;
+  effect_summary: string;
+  created_at: string;
 }
 
 // Backend seed uses 'med' not 'medium'. Accept both so the dashboard never
