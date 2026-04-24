@@ -70,6 +70,14 @@ export function EventBridge() {
     };
 
     window.__lendsteadPickUp = (itemId, qty = 1) => {
+      // Tolerate unknown item ids: if the world tries to pick up a content
+      // reference that is not (yet) registered, log and drop rather than
+      // crashing the engine.
+      if (!engine.bundle.items.has(itemId)) {
+        // eslint-disable-next-line no-console
+        console.warn(`__lendsteadPickUp: unknown item ${itemId}, skipped`);
+        return;
+      }
       const result = addItem(engine.state.inventory, itemId, qty, engine.bundle.items.lookup);
       engine.setInventory(result.inventory);
       // Emit a gather_item event so quests tracking this pickup advance

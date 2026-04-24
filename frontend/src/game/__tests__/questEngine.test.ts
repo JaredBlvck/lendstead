@@ -19,15 +19,6 @@ import {
   item_template_knife,
   item_template_silver_coin,
 } from '../../content/items/_template';
-// Need to provide items the template quest rewards point at:
-const item_reedwake_knife_reward = {
-  ...item_template_knife,
-  id: 'item_reedwake_knife',
-};
-const item_silver_coin_reward = {
-  ...item_template_silver_coin,
-  id: 'item_silver_coin',
-};
 
 function registry() {
   const reg = new ItemRegistry();
@@ -35,8 +26,6 @@ function registry() {
     item_template_flint,
     item_template_knife,
     item_template_silver_coin,
-    item_reedwake_knife_reward,
-    item_silver_coin_reward,
   ]);
   return reg;
 }
@@ -86,7 +75,7 @@ describe('questEngine', () => {
     let rt = startQuest(quest_template_do_not_ship, 'p1', 3);
     rt = advanceOnEvent(quest_template_do_not_ship, rt, {
       kind: 'gather_item',
-      payload: { item_id: 'item_flint', qty: 1 },
+      payload: { item_id: 'item_template_flint', qty: 1 },
     });
     let gather = rt.objectives.find((o) => o.id === 'obj_gather_flint')!;
     expect(gather.current).toBe(1);
@@ -94,7 +83,7 @@ describe('questEngine', () => {
 
     rt = advanceOnEvent(quest_template_do_not_ship, rt, {
       kind: 'gather_item',
-      payload: { item_id: 'item_flint', qty: 5 },
+      payload: { item_id: 'item_template_flint', qty: 5 },
     });
     gather = rt.objectives.find((o) => o.id === 'obj_gather_flint')!;
     expect(gather.current).toBe(3);   // clamped to count=3
@@ -105,7 +94,7 @@ describe('questEngine', () => {
     let rt = startQuest(quest_template_do_not_ship, 'p1', 3);
     rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'reach_tile', payload: { x: 20, y: 12 } });
     rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'talk_to_npc', payload: { npc_id: 'npc_template_giver' } });
-    rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'gather_item', payload: { item_id: 'item_flint', qty: 3 } });
+    rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'gather_item', payload: { item_id: 'item_template_flint', qty: 3 } });
     expect(rt.status).toBe('completed');
   });
 
@@ -114,7 +103,7 @@ describe('questEngine', () => {
     let rt = startQuest(quest_template_do_not_ship, 'p1', 3);
     rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'reach_tile', payload: { x: 20, y: 12 } });
     rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'talk_to_npc', payload: { npc_id: 'npc_template_giver' } });
-    rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'gather_item', payload: { item_id: 'item_flint', qty: 3 } });
+    rt = advanceOnEvent(quest_template_do_not_ship, rt, { kind: 'gather_item', payload: { item_id: 'item_template_flint', qty: 3 } });
 
     const world = newWorldState();
     const inv = emptyInventory('p1', 28);
@@ -126,7 +115,7 @@ describe('questEngine', () => {
 
     expect(result.runtime.status).toBe('completed');
     expect(result.world.completed_quest_ids).toContain('quest_template_do_not_ship');
-    expect(qtyOf(result.inventory, 'item_reedwake_knife')).toBe(1);
+    expect(qtyOf(result.inventory, 'item_template_reedwake_knife')).toBe(1);
   });
 
   it('applyChoice marks completes_objectives and logs the choice', () => {
@@ -148,7 +137,7 @@ describe('questEngine', () => {
       inventory: inv,
       itemLookup: reg.lookup,
     }, 7);
-    expect(qtyOf(result.inventory, 'item_silver_coin')).toBe(10);
+    expect(qtyOf(result.inventory, 'item_template_silver_coin')).toBe(10);
   });
 
   it('failQuest marks runtime + world', () => {

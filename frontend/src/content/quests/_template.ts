@@ -42,7 +42,7 @@ export const quest_template_do_not_ship: Quest = {
     {
       id: 'obj_gather_flint',
       kind: 'gather_item',
-      target: { item_id: 'item_flint' },
+      target: { item_id: 'item_template_flint' },
       count: 3,
       hidden: false,
       description: 'Pick up three flint shards.',
@@ -69,14 +69,14 @@ export const quest_template_do_not_ship: Quest = {
           unlocks_objectives: ['obj_gather_flint'],
           completes_objectives: [],
           extra_rewards: [
-            { kind: 'item', params: { item_id: 'item_silver_coin', qty: 10 } },
+            { kind: 'item', params: { item_id: 'item_template_silver_coin', qty: 10 } },
           ],
         },
       ],
     },
   ],
   rewards: [
-    { kind: 'item', params: { item_id: 'item_reedwake_knife', qty: 1 } },
+    { kind: 'item', params: { item_id: 'item_template_reedwake_knife', qty: 1 } },
     { kind: 'skill_xp', params: { skill: 'scout', amount: 50 } },
   ],
   repeatable: false,
