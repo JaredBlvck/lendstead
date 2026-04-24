@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
+import { EngineProvider } from './game/engine/EngineContext';
 import './index.css';
 
 // Poll-based live updates. 3s keeps the dashboard feeling alive without
@@ -20,7 +21,9 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <EngineProvider>
+        <App />
+      </EngineProvider>
     </QueryClientProvider>
   </React.StrictMode>
 );

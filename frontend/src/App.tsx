@@ -12,6 +12,9 @@ import { Header } from './components/Header';
 import { StatsCard } from './components/StatsCard';
 import { NPCList } from './components/NPCList';
 import { LogsFeed } from './components/LogsFeed';
+import { DevPanelHost } from './game/engine/DevPanelHost';
+import { EngineUIHost } from './game/ui/EngineUIHost';
+import { EventBridge } from './game/engine/EventBridge';
 
 // 3D exploration view is code-split so the Three.js bundle only loads
 // when the user opens it.
@@ -82,20 +85,25 @@ export default function App() {
 
   if (mode === 'exploration') {
     return (
-      <Suspense
-        fallback={
-          <div className="boot">
-            <div className="boot-title">Lendstead</div>
-            <div className="boot-sub">Entering the island...</div>
-          </div>
-        }
-      >
-        <ExplorationView
-          world={w}
-          npcs={allNPCs}
-          onExit={() => setMode('dashboard')}
-        />
-      </Suspense>
+      <>
+        <Suspense
+          fallback={
+            <div className="boot">
+              <div className="boot-title">Lendstead</div>
+              <div className="boot-sub">Entering the island...</div>
+            </div>
+          }
+        >
+          <ExplorationView
+            world={w}
+            npcs={allNPCs}
+            onExit={() => setMode('dashboard')}
+          />
+        </Suspense>
+        <EventBridge />
+        <EngineUIHost />
+        <DevPanelHost />
+      </>
     );
   }
 
@@ -118,6 +126,7 @@ export default function App() {
       <StatsCard world={w} />
       <NPCList npcs={allNPCs} />
       <LogsFeed logs={allLogs} />
+      <DevPanelHost />
     </div>
   );
 }
