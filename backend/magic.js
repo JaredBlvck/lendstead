@@ -318,6 +318,76 @@ export function shouldAutoCastResourceAmp({
   };
 }
 
+// Sr-side auto-cast: reflexive protection over settlement centroid in response
+// to a storm event this cycle. Closes the symmetry with Jr's resource_amp
+// auto-cast — Architect (Jr) handles sustenance, Opportunist (Sr) handles
+// perimeter/environmental reactions. Conservative: only fires on storm,
+// requires idle 10+ cycles, energy >= 30, protection unlocked, no existing
+// protection aura already covering the centroid.
+export const AUTO_CAST_PROTECTION_COST = 30;
+export const AUTO_CAST_PROTECTION_RADIUS = 5;
+export const AUTO_CAST_PROTECTION_DURATION = 4;
+
+export function shouldAutoCastProtection({
+  storms,
+  aliveNpcs,
+  srEnergy,
+  activeAbilities,
+  lastSrCastCycle,
+  nextCycle,
+  state,
+}) {
+  if (!Array.isArray(storms) || storms.length === 0) return null;
+  const idleCycles =
+    lastSrCastCycle == null || lastSrCastCycle < 0
+      ? Infinity
+      : nextCycle - lastSrCastCycle;
+  if (idleCycles < AUTO_CAST_IDLE_THRESHOLD) return null;
+  if (Number(srEnergy || 0) < AUTO_CAST_PROTECTION_COST) return null;
+  if (!abilityUnlocked("protection", state || {})) return null;
+
+  const positioned = (aliveNpcs || []).filter(
+    (n) =>
+      Number.isFinite(n.x) &&
+      Number.isFinite(n.y) &&
+      n.alive !== false &&
+      n.condition !== "dead",
+  );
+  if (positioned.length === 0) return null;
+  const cx = Math.round(
+    positioned.reduce((s, n) => s + n.x, 0) / positioned.length,
+  );
+  const cy = Math.round(
+    positioned.reduce((s, n) => s + n.y, 0) / positioned.length,
+  );
+
+  const existing = protectionAt(activeAbilities || [], cx, cy);
+  if (existing.protected) return null;
+
+  const worstStorm = storms.reduce((worst, s) => {
+    const sev = s.payload?.severity || "minor";
+    const order = { minor: 0, moderate: 1, major: 2 };
+    return (order[sev] ?? 0) > (order[worst.payload?.severity || "minor"] ?? 0)
+      ? s
+      : worst;
+  }, storms[0]);
+
+  return {
+    leader: "sr",
+    ability_name: "protection",
+    tile: [cx, cy],
+    radius: AUTO_CAST_PROTECTION_RADIUS,
+    duration_cycles: AUTO_CAST_PROTECTION_DURATION,
+    cost: AUTO_CAST_PROTECTION_COST,
+    idle_cycles: idleCycles === Infinity ? null : idleCycles,
+    storm_count: storms.length,
+    trigger_severity: worstStorm.payload?.severity || "minor",
+    npcs_covered: positioned.filter(
+      (n) => Math.hypot(n.x - cx, n.y - cy) <= AUTO_CAST_PROTECTION_RADIUS,
+    ).length,
+  };
+}
+
 export function flavorSummary(ability_name, target_data) {
   const td = target_data || {};
   switch (ability_name) {

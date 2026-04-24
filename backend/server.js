@@ -34,6 +34,7 @@ import {
   monumentPosition,
   applyCast,
   shouldAutoCastResourceAmp,
+  shouldAutoCastProtection,
 } from "./magic.js";
 import {
   computeInteractions,
@@ -842,6 +843,84 @@ async function runCycleAdvance() {
           cost: decision.cost,
           expires_cycle: expires,
           reason: `${decision.kind}_deficit_${decision.deficit_days}d`,
+        });
+      }
+
+      // Sr-side auto-cast: reflexive protection over settlement centroid when a
+      // storm rolls this cycle and Sr has been idle. Opportunist's perimeter
+      // instinct — mirrors the Architect's sustenance reflex.
+      const lastSrCastCycle = overuseRecent
+        .filter((a) => a.leader === "sr")
+        .reduce((max, a) => Math.max(max, Number(a.cycle_used)), -1);
+      const storms = rolled.filter((e) => e.kind === "storm");
+      const srDecision = shouldAutoCastProtection({
+        storms,
+        aliveNpcs,
+        srEnergy: srEnergyNext,
+        activeAbilities,
+        lastSrCastCycle,
+        nextCycle,
+        state: stateForUnlocks,
+      });
+      if (srDecision) {
+        const target_data = {
+          tile: srDecision.tile,
+          radius: srDecision.radius,
+          duration_cycles: srDecision.duration_cycles,
+          mode: "storm_shield",
+          auto: true,
+        };
+        const effectSummary = flavorSummary("protection", target_data);
+        const expires = nextCycle + srDecision.duration_cycles;
+        await client.query(
+          `INSERT INTO abilities (leader, ability_name, target_data, energy_cost, cycle_used, expires_cycle, effect_summary)
+           VALUES ('sr', 'protection', $1::jsonb, $2, $3, $4, $5)`,
+          [target_data, srDecision.cost, nextCycle, expires, effectSummary],
+        );
+        await client.query(
+          `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'ability', $2)`,
+          [
+            nextCycle,
+            {
+              leader: "sr",
+              ability_name: "protection",
+              target_data,
+              expires_cycle: expires,
+              effect_summary: effectSummary,
+              auto: true,
+            },
+          ],
+        );
+        await client.query(
+          `INSERT INTO logs (cycle, leader, action, reasoning)
+           VALUES ($1, 'sr', $2, $3)`,
+          [
+            nextCycle,
+            `[auto] storm_shield at [${srDecision.tile[0]},${srDecision.tile[1]}] r=${srDecision.radius} for ${srDecision.duration_cycles} cycles`,
+            `engine response: ${srDecision.storm_count} storm(s) (${srDecision.trigger_severity}), ${srDecision.npcs_covered} npcs covered, Sr idle ${srDecision.idle_cycles ?? "infinite"} cycles`,
+          ],
+        );
+        const nextMonuments = applyCast(current.magic_monuments, {
+          x: srDecision.tile[0],
+          y: srDecision.tile[1],
+          kind: "protection",
+          leader: "sr",
+          cycle: nextCycle,
+        });
+        await client.query(
+          "UPDATE world SET magic_monuments = $1::jsonb WHERE id = $2",
+          [JSON.stringify(nextMonuments), current.id],
+        );
+        srEnergyNext = Math.max(0, srEnergyNext - srDecision.cost);
+        autoCasts.push({
+          leader: "sr",
+          ability_name: "protection",
+          tile: srDecision.tile,
+          radius: srDecision.radius,
+          cost: srDecision.cost,
+          expires_cycle: expires,
+          reason: `storm_${srDecision.trigger_severity}_${srDecision.storm_count}`,
+          npcs_covered: srDecision.npcs_covered,
         });
       }
     }
