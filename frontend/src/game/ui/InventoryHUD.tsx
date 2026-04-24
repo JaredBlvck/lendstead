@@ -3,9 +3,9 @@
 
 import { useState, type CSSProperties } from 'react';
 import { useEngine } from '../engine/EngineContext';
-import { destroyStack } from '../items/inventory';
+import { destroyStack, removeItem } from '../items/inventory';
 import { equipFromInventory, unequip } from '../items/equipment';
-import type { EquipSlot, InventoryStack } from '../items/itemTypes';
+import type { EquipSlot, Item, InventoryStack } from '../items/itemTypes';
 
 const styles: Record<string, CSSProperties> = {
   wrap: {
@@ -113,6 +113,45 @@ export function InventoryHUD() {
     setSelected(null);
   };
 
+  // Items with hp_restore or energy_restore stat_effects are consumables.
+  // "Use" consumes one + applies the effect to the player's combat block.
+  const consumableEffects = (item: Item): { hp: number; energy: number } => {
+    let hp = 0;
+    let energy = 0;
+    for (const eff of item.stat_effects) {
+      if (eff.stat === 'hp_restore') hp += eff.delta;
+      if (eff.stat === 'energy_restore') energy += eff.delta;
+    }
+    return { hp, energy };
+  };
+
+  const handleUse = () => {
+    if (selected == null || !selectedStack || !selectedItem) return;
+    const effect = consumableEffects(selectedItem);
+    if (effect.hp <= 0 && effect.energy <= 0) return;
+    const combat = engine.state.player.combat;
+    if (!combat) return;
+
+    // Remove 1 of the selected item
+    const rem = removeItem(inventory, selectedStack.item_id, 1);
+    engine.setInventory(rem.inventory);
+
+    // Apply effects, clamped to max
+    const newHp = Math.min(combat.max_hp, combat.hp + effect.hp);
+    const maxEnergy = combat.max_energy ?? 20;
+    const curEnergy = combat.energy ?? maxEnergy;
+    const newEnergy = Math.min(maxEnergy, curEnergy + effect.energy);
+    engine.setPlayer({
+      ...engine.state.player,
+      combat: {
+        ...combat,
+        hp: newHp,
+        energy: newEnergy,
+      },
+    });
+    setSelected(null);
+  };
+
   const equippedEntries = Object.entries(equipment.slots) as Array<[EquipSlot, InventoryStack | undefined]>;
 
   return (
@@ -156,6 +195,19 @@ export function InventoryHUD() {
             {selectedItem.equip_slot && (
               <button style={styles.button} onClick={handleEquip}>equip ({selectedItem.equip_slot})</button>
             )}
+            {(() => {
+              const eff = consumableEffects(selectedItem);
+              if (eff.hp <= 0 && eff.energy <= 0) return null;
+              const label = [
+                eff.hp > 0 ? `+${eff.hp} hp` : null,
+                eff.energy > 0 ? `+${eff.energy} energy` : null,
+              ].filter(Boolean).join(' / ');
+              return (
+                <button style={styles.button} onClick={handleUse}>
+                  use ({label})
+                </button>
+              );
+            })()}
             <button style={styles.button} onClick={handleDrop}>drop</button>
           </div>
         </div>

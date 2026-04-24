@@ -44,7 +44,78 @@ export interface RoundResult {
   enemy_damage_dealt: number;
   enemy_hit: boolean;
   enemy_crit: boolean;
+  enemy_ability_used?: string;   // ability id if the enemy used one this round
   log: string[];
+}
+
+// Choose the enemy's next action. Picks the first off-cooldown ability
+// in content order, otherwise basic attack. Content-order rotation
+// is deterministic so tests can pin outcomes via the seeded RNG.
+interface EnemyAction {
+  kind: 'basic' | 'ability';
+  ability?: Enemy['abilities'][number];
+}
+
+function chooseEnemyAction(enemy: Enemy, state: EncounterState): EnemyAction {
+  const cooldowns = state.enemy_ability_cooldowns ?? {};
+  for (const ab of enemy.abilities) {
+    if ((cooldowns[ab.id] ?? 0) === 0) {
+      return { kind: 'ability', ability: ab };
+    }
+  }
+  return { kind: 'basic' };
+}
+
+// Tick every enemy ability cooldown down by 1. Returns the new map
+// (omits any entry that hits 0). Passed back to the caller who merges
+// into EncounterState.enemy_ability_cooldowns.
+function tickEnemyCooldowns(current: Record<string, number>): Record<string, number> {
+  const next: Record<string, number> = {};
+  for (const [id, rounds] of Object.entries(current)) {
+    if (rounds > 1) next[id] = rounds - 1;
+  }
+  return next;
+}
+
+// Resolve the enemy's outgoing damage for a given action. Returns
+// {hit, crit, damage, log_line}. damage_reduction is applied upstream
+// by callers that implement guard-style player abilities.
+function resolveEnemyAction(
+  enemy: Enemy,
+  player: PlayerCombatStats,
+  action: EnemyAction,
+  random: RandomFn,
+): { hit: boolean; crit: boolean; damage: number; log_line: string; ability_id?: string } {
+  const hit = rollAttack(
+    enemy.attack,
+    player.defense,
+    enemy.crit_chance,
+    player.dodge_chance,
+    random,
+  );
+  const bonus = action.kind === 'ability' && action.ability
+    ? Math.max(0, action.ability.damage_bonus)
+    : 0;
+  const damage = hit.hit ? hit.damage + (hit.crit ? bonus * 2 : bonus) : 0;
+
+  let log_line: string;
+  if (action.kind === 'ability' && action.ability) {
+    if (!hit.hit) log_line = `The ${enemy.name} uses ${action.ability.name} but misses.`;
+    else if (hit.crit) log_line = `The ${enemy.name} uses ${action.ability.name} - CRIT for ${damage}!`;
+    else log_line = `The ${enemy.name} uses ${action.ability.name} for ${damage}.`;
+  } else {
+    if (!hit.hit) log_line = `The ${enemy.name} misses.`;
+    else if (hit.crit) log_line = `The ${enemy.name} lands a brutal blow for ${damage}!`;
+    else log_line = `The ${enemy.name} hits for ${damage}.`;
+  }
+
+  return {
+    hit: hit.hit,
+    crit: hit.crit,
+    damage,
+    log_line,
+    ability_id: action.kind === 'ability' ? action.ability?.id : undefined,
+  };
 }
 
 // Roll a single attack. Returns {hit, crit, damage}.
@@ -113,22 +184,25 @@ export function resolveAttackRound(
   let ePlayerDamageDealt = 0;
   let eHit = false;
   let eCrit = false;
+  let nextEnemyCooldowns = tickEnemyCooldowns(state.enemy_ability_cooldowns ?? {});
+  let enemyAbilityUsed: string | undefined;
 
-  // If enemy survived, counterattack
+  // If enemy survived, counterattack (ability if available, else basic)
   if (enemyHpAfter > 0) {
-    const e = rollAttack(
-      enemy.attack,
-      player.defense,
-      enemy.crit_chance,
-      player.dodge_chance,
-      random,
-    );
-    ePlayerDamageDealt = e.damage;
-    eHit = e.hit;
-    eCrit = e.crit;
-    if (!e.hit) log.push(`The ${enemy.name} misses.`);
-    else if (e.crit) log.push(`The ${enemy.name} lands a brutal blow for ${e.damage}!`);
-    else log.push(`The ${enemy.name} hits for ${e.damage}.`);
+    const action = chooseEnemyAction(enemy, state);
+    const resolved = resolveEnemyAction(enemy, player, action, random);
+    ePlayerDamageDealt = resolved.damage;
+    eHit = resolved.hit;
+    eCrit = resolved.crit;
+    log.push(resolved.log_line);
+    if (action.kind === 'ability' && action.ability) {
+      enemyAbilityUsed = action.ability.id;
+      // Apply cooldown (to the pre-tick snapshot so the ability isn't ticked this round)
+      nextEnemyCooldowns = {
+        ...nextEnemyCooldowns,
+        [action.ability.id]: action.ability.cooldown_rounds,
+      };
+    }
   } else {
     log.push(`You defeat the ${enemy.name}.`);
   }
@@ -146,6 +220,7 @@ export function resolveAttackRound(
     player_hp: playerHpAfter,
     outcome,
     log: [...state.log, ...log],
+    enemy_ability_cooldowns: nextEnemyCooldowns,
   };
 
   return {
@@ -157,6 +232,7 @@ export function resolveAttackRound(
       enemy_damage_dealt: ePlayerDamageDealt,
       enemy_hit: eHit,
       enemy_crit: eCrit,
+      enemy_ability_used: enemyAbilityUsed,
       log,
     },
   };
@@ -232,24 +308,26 @@ export function resolveAbilityRound(
   // Guard / ability_reduction: enemy counterattack is reduced this round
   const reduction = ability.damage_reduction;
 
-  // Enemy counterattack if still alive
+  // Enemy counterattack if still alive. Use ability rotation same as
+  // resolveAttackRound so the enemy gets to flourish against guard too.
+  let nextEnemyCooldowns = tickEnemyCooldowns(state.enemy_ability_cooldowns ?? {});
   if (enemyHpAfter > 0) {
-    const dodged = random() < player.dodge_chance;
-    if (dodged) {
-      log.push(`The ${enemy.name} misses.`);
+    const action = chooseEnemyAction(enemy, state);
+    const resolved = resolveEnemyAction(enemy, player, action, random);
+    // Apply guard reduction
+    const appliedDamage = Math.max(0, Math.round(resolved.damage * (1 - reduction)));
+    playerHpAfter = Math.max(0, playerHpAfter - appliedDamage);
+    damageTaken = appliedDamage;
+    if (reduction > 0 && resolved.hit) {
+      log.push(`${resolved.log_line} (reduced by guard)`);
     } else {
-      const variance = Math.floor(random() * 3);
-      const base = Math.max(1, enemy.attack - player.defense + variance);
-      const crit = random() < enemy.crit_chance;
-      let dmg = crit ? base * 2 : base;
-      dmg = Math.max(0, Math.round(dmg * (1 - reduction)));
-      playerHpAfter = Math.max(0, playerHpAfter - dmg);
-      damageTaken = dmg;
-      log.push(
-        crit
-          ? `The ${enemy.name} lands a brutal blow for ${dmg}!`
-          : `The ${enemy.name} hits for ${dmg}${reduction > 0 ? ' (reduced)' : ''}.`,
-      );
+      log.push(resolved.log_line);
+    }
+    if (action.kind === 'ability' && action.ability) {
+      nextEnemyCooldowns = {
+        ...nextEnemyCooldowns,
+        [action.ability.id]: action.ability.cooldown_rounds,
+      };
     }
   } else {
     log.push(`You defeat the ${enemy.name}.`);
@@ -276,6 +354,7 @@ export function resolveAbilityRound(
       player_hp: playerHpAfter,
       outcome,
       log: [...state.log, ...log],
+      enemy_ability_cooldowns: nextEnemyCooldowns,
     },
     player_energy_after: nextEnergy,
     ability_cooldowns_after: nextCooldowns,

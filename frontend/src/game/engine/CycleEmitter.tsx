@@ -27,7 +27,10 @@ export function CycleEmitter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Emit elapsed_cycles when cycle advances.
+  // Emit elapsed_cycles when cycle advances. Also apply passive HP regen:
+  // the player recovers 1 HP per cycle advanced (capped at max_hp) and
+  // 2 energy per cycle. This closes the healing-outside-combat loop so
+  // sessions can survive multiple encounters without an instant-win cheat.
   useEffect(() => {
     const current = engine.state.world.cycle;
     const delta = current - prevCycleRef.current;
@@ -38,8 +41,31 @@ export function CycleEmitter() {
           payload: { cycle: current - delta + i + 1 },
         });
       }
+      // Passive regen: only tick if the player has a combat block and
+      // isn't already at full HP/energy. Cycle cost is kept small so
+      // this doesn't trivialize combat.
+      const combat = engine.state.player.combat;
+      if (combat) {
+        const REGEN_HP_PER_CYCLE = 1;
+        const REGEN_ENERGY_PER_CYCLE = 2;
+        const newHp = Math.min(combat.max_hp, combat.hp + REGEN_HP_PER_CYCLE * delta);
+        const maxEnergy = combat.max_energy ?? 20;
+        const curEnergy = combat.energy ?? maxEnergy;
+        const newEnergy = Math.min(maxEnergy, curEnergy + REGEN_ENERGY_PER_CYCLE * delta);
+        if (newHp !== combat.hp || newEnergy !== curEnergy) {
+          engine.setPlayer({
+            ...engine.state.player,
+            combat: {
+              ...combat,
+              hp: newHp,
+              energy: newEnergy,
+            },
+          });
+        }
+      }
     }
     prevCycleRef.current = current;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine.state.world.cycle]);
 
   // Emit faction_reputation when scores change.

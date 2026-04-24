@@ -186,11 +186,24 @@ export function CombatModal({ enemy, onClose }: Props) {
   }, [state.outcome, engine]);
 
   const handleAttack = () => {
-    const { state: next } = resolveAttackRound(state, enemy, {
+    const { state: next, result } = resolveAttackRound(state, enemy, {
       ...playerStats,
       hp: state.player_hp,
     });
     setState(next);
+    // If enemy used an ability this round, emit ability_cast for quests
+    // tracking enemy-side casts.
+    if (result.enemy_ability_used) {
+      window.__lendsteadEmitEvent?.({
+        kind: 'ability_cast',
+        payload: {
+          ability_id: result.enemy_ability_used,
+          source: 'enemy',
+          enemy_id: enemy.id,
+          damage: result.enemy_damage_dealt,
+        },
+      });
+    }
   };
 
   const handleAbility = (ability: PlayerAbility) => {
