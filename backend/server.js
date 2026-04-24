@@ -1205,6 +1205,192 @@ app.post("/api/abilities", async (req, res, next) => {
   }
 });
 
+// === QUESTS ===
+// Backend spine for Sr's v8.0 quest system. Quest content stays frontend-
+// derived (role+name lookup); backend owns only accept/complete/decline state
+// so multiple browsers see the same progress and the engine can later auto-
+// complete on event triggers.
+
+// GET /api/quests?status=accepted|completed|declined (optional filter).
+// Joins npc name so the frontend can show quest bylines without a second fetch.
+app.get("/api/quests", async (req, res, next) => {
+  try {
+    const status = req.query.status;
+    const clauses = [];
+    const params = [];
+    if (
+      status === "accepted" ||
+      status === "completed" ||
+      status === "declined"
+    ) {
+      params.push(status);
+      clauses.push(`q.status = $${params.length}`);
+    }
+    const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
+    const { rows } = await pool.query(
+      `SELECT q.*, n.name AS npc_name, n.role AS npc_role, n.lane AS npc_lane
+         FROM quest_state q
+         JOIN npcs n ON n.id = q.npc_id
+         ${where}
+        ORDER BY q.updated_at DESC
+        LIMIT 500`,
+      params,
+    );
+    res.json(rows);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// POST /api/quests/transition
+// body: { npc_id, quest_key, to: 'accepted'|'completed'|'declined', leader?: 'sr'|'jr' }
+// Single transition endpoint — UPSERTs on (npc_id, quest_key), sets cycle + by
+// columns appropriate to the target status, emits a quest_state_change event,
+// and writes a leader log entry so the narrative log shows quest activity.
+app.post("/api/quests/transition", async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const { npc_id, quest_key, to, leader } = req.body || {};
+    if (!Number.isFinite(Number(npc_id)))
+      return res.status(400).json({ error: "npc_id (integer) required" });
+    if (!quest_key || typeof quest_key !== "string")
+      return res.status(400).json({ error: "quest_key (string) required" });
+    if (!["accepted", "completed", "declined"].includes(to))
+      return res.status(400).json({
+        error: "to must be 'accepted' | 'completed' | 'declined'",
+      });
+    if (leader && !["sr", "jr"].includes(leader))
+      return res.status(400).json({ error: "leader must be 'sr' or 'jr'" });
+
+    await client.query("BEGIN");
+
+    const { rows: worldRows } = await client.query(
+      "SELECT cycle FROM world ORDER BY id DESC LIMIT 1",
+    );
+    const cycle = worldRows[0]?.cycle ?? 0;
+
+    const { rows: npcRows } = await client.query(
+      "SELECT id, name, role, lane FROM npcs WHERE id = $1",
+      [Number(npc_id)],
+    );
+    const npc = npcRows[0];
+    if (!npc) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: `npc ${npc_id} not found` });
+    }
+
+    const { rows: priorRows } = await client.query(
+      "SELECT status, accepted_by FROM quest_state WHERE npc_id = $1 AND quest_key = $2",
+      [Number(npc_id), quest_key],
+    );
+    const prior = priorRows[0];
+    const priorStatus = prior?.status || null;
+
+    // Build column updates per target status.
+    const cols = { status: to, updated_at: "now()" };
+    if (to === "accepted") {
+      cols.accepted_cycle = cycle;
+      cols.accepted_by = leader || prior?.accepted_by || null;
+    } else if (to === "completed") {
+      cols.completed_cycle = cycle;
+      cols.completed_by = leader || "auto";
+    } else {
+      cols.declined_cycle = cycle;
+    }
+
+    // UPSERT. Build the SET clause dynamically, excluding updated_at which
+    // uses now() directly.
+    const insertCols = [
+      "npc_id",
+      "quest_key",
+      "status",
+      "accepted_cycle",
+      "accepted_by",
+      "completed_cycle",
+      "completed_by",
+      "declined_cycle",
+    ];
+    const insertVals = [
+      Number(npc_id),
+      quest_key,
+      to,
+      cols.accepted_cycle ?? null,
+      cols.accepted_by ?? null,
+      cols.completed_cycle ?? null,
+      cols.completed_by ?? null,
+      cols.declined_cycle ?? null,
+    ];
+    const placeholders = insertVals.map((_, i) => `$${i + 1}`).join(",");
+    const setClauses = ["status = EXCLUDED.status", "updated_at = now()"];
+    if (to === "accepted") {
+      setClauses.push(
+        "accepted_cycle = EXCLUDED.accepted_cycle",
+        "accepted_by = COALESCE(EXCLUDED.accepted_by, quest_state.accepted_by)",
+      );
+    } else if (to === "completed") {
+      setClauses.push(
+        "completed_cycle = EXCLUDED.completed_cycle",
+        "completed_by = EXCLUDED.completed_by",
+      );
+    } else {
+      setClauses.push("declined_cycle = EXCLUDED.declined_cycle");
+    }
+    const { rows: upserted } = await client.query(
+      `INSERT INTO quest_state (${insertCols.join(",")})
+       VALUES (${placeholders})
+       ON CONFLICT (npc_id, quest_key) DO UPDATE SET ${setClauses.join(", ")}
+       RETURNING *`,
+      insertVals,
+    );
+
+    const { rows: evtRows } = await client.query(
+      `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'quest_state_change', $2) RETURNING *`,
+      [
+        cycle,
+        {
+          npc_id: npc.id,
+          npc_name: npc.name,
+          npc_role: npc.role,
+          npc_lane: npc.lane,
+          quest_key,
+          prior_status: priorStatus,
+          new_status: to,
+          leader: leader || null,
+        },
+      ],
+    );
+
+    const actionByStatus = {
+      accepted: `accepted quest [${quest_key}] from ${npc.name}`,
+      completed: `completed quest [${quest_key}] with ${npc.name}`,
+      declined: `declined quest [${quest_key}] from ${npc.name}`,
+    };
+    await client.query(
+      `INSERT INTO logs (cycle, leader, action, reasoning)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        cycle,
+        leader || "auto",
+        actionByStatus[to],
+        priorStatus ? `transition ${priorStatus} -> ${to}` : `initial ${to}`,
+      ],
+    );
+
+    await client.query("COMMIT");
+    res.json({
+      applied: true,
+      quest: upserted[0],
+      prior_status: priorStatus,
+      event: evtRows[0],
+    });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(e);
+  } finally {
+    client.release();
+  }
+});
+
 // Error handler
 app.use((err, _req, res, _next) => {
   console.error("api error", err);
