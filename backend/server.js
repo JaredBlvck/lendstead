@@ -40,6 +40,9 @@ import {
   computeInteractions,
   applyInteractionEffects,
   detectSkillCrossings,
+  affinityPairKey,
+  affinityDelta,
+  newAffinityMilestones,
 } from "./interactions.js";
 
 const app = express();
@@ -401,6 +404,68 @@ async function runCycleAdvance() {
           `learner lifted through teach event (${cr.skill_from} -> ${cr.skill_to})`,
         ],
       );
+    }
+
+    // Affinity: every interaction updates a per-pair score. Crossing a
+    // milestone (acquainted / friendly / close / bonded) emits a narrative
+    // event so the frontend can surface recurring relationships.
+    for (const it of interactions) {
+      if (it.participants.length < 2) continue;
+      const [npcA, npcB] = affinityPairKey(
+        it.participants[0].id,
+        it.participants[1].id,
+      );
+      const delta = affinityDelta(it);
+      if (delta === 0) continue;
+      const { rows: priorRows } = await client.query(
+        `SELECT score, milestones_reached FROM npc_affinity WHERE npc_a = $1 AND npc_b = $2`,
+        [npcA, npcB],
+      );
+      const priorScore = Number(priorRows[0]?.score || 0);
+      const priorMilestones = priorRows[0]?.milestones_reached || [];
+      const newScore = Math.max(0, priorScore + delta);
+      const freshMilestones = newAffinityMilestones(priorMilestones, newScore);
+      const updatedMilestones = [...priorMilestones, ...freshMilestones];
+      await client.query(
+        `INSERT INTO npc_affinity (npc_a, npc_b, score, interactions, last_cycle, last_type, milestones_reached)
+         VALUES ($1, $2, $3, 1, $4, $5, $6::jsonb)
+         ON CONFLICT (npc_a, npc_b) DO UPDATE SET
+           score = EXCLUDED.score,
+           interactions = npc_affinity.interactions + 1,
+           last_cycle = EXCLUDED.last_cycle,
+           last_type = EXCLUDED.last_type,
+           milestones_reached = EXCLUDED.milestones_reached,
+           updated_at = now()`,
+        [
+          npcA,
+          npcB,
+          newScore,
+          nextCycle,
+          it.type,
+          JSON.stringify(updatedMilestones),
+        ],
+      );
+      for (const ms of freshMilestones) {
+        const pA =
+          it.participants.find((p) => p.id === npcA) || it.participants[0];
+        const pB =
+          it.participants.find((p) => p.id === npcB) || it.participants[1];
+        await client.query(
+          `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'affinity_milestone', $2)`,
+          [
+            nextCycle,
+            {
+              milestone: ms,
+              score: newScore,
+              pair: [
+                { id: pA.id, name: pA.name, role: pA.role, lane: pA.lane },
+                { id: pB.id, name: pB.name, role: pB.role, lane: pB.lane },
+              ],
+              triggered_by: it.type,
+            },
+          ],
+        );
+      }
     }
 
     // ---- Severity escalation: count recent same-kind events (last 5 cycles)
@@ -1550,6 +1615,48 @@ app.post("/api/quests/transition", async (req, res, next) => {
     next(e);
   } finally {
     client.release();
+  }
+});
+
+// === AFFINITY ===
+// GET /api/affinity[?min_score=N&npc_id=N&limit=N]
+// Returns per-pair relationship scores joined with NPC names/roles/lanes.
+// Sorted by score desc so the tightest bonds surface first. Optional filters:
+// min_score to cut off casual pairs, npc_id to show only one NPC's pairings.
+app.get("/api/affinity", async (req, res, next) => {
+  try {
+    const minScore = Number(req.query.min_score);
+    const npcId = Number(req.query.npc_id);
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 200));
+    const clauses = [];
+    const params = [];
+    if (Number.isFinite(minScore)) {
+      params.push(minScore);
+      clauses.push(`f.score >= $${params.length}`);
+    }
+    if (Number.isFinite(npcId)) {
+      params.push(npcId);
+      clauses.push(
+        `(f.npc_a = $${params.length} OR f.npc_b = $${params.length})`,
+      );
+    }
+    const where = clauses.length ? "WHERE " + clauses.join(" AND ") : "";
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT f.*,
+              na.name AS a_name, na.role AS a_role, na.lane AS a_lane,
+              nb.name AS b_name, nb.role AS b_role, nb.lane AS b_lane
+         FROM npc_affinity f
+         JOIN npcs na ON na.id = f.npc_a
+         JOIN npcs nb ON nb.id = f.npc_b
+         ${where}
+        ORDER BY f.score DESC, f.last_cycle DESC
+        LIMIT $${params.length}`,
+      params,
+    );
+    res.json(rows);
+  } catch (e) {
+    next(e);
   }
 });
 

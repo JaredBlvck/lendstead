@@ -9,6 +9,51 @@ export const MAX_INTERACTIONS_PER_CYCLE = 8;
 export const SKILL_CAP = 10;
 export const QUEST_GIVER_SKILL_THRESHOLD = 5;
 
+// Affinity: per-pair relationship score built from interaction history.
+// Heavier investments (life-saving, knowledge transfer) move the needle more
+// than light ones (small talk). Thresholds trigger one-shot narrative events.
+export const AFFINITY_DELTA = {
+  treat: 0.15,
+  teach: 0.1,
+  trade: 0.05,
+  report: 0.03,
+  conversation: 0.02,
+};
+
+export const AFFINITY_MILESTONES = [
+  { key: "acquainted", threshold: 0.2 },
+  { key: "friendly", threshold: 0.5 },
+  { key: "close", threshold: 1.0 },
+  { key: "bonded", threshold: 2.0 },
+];
+
+// Compute the symmetric pair-key (smaller id first) so affinity is direction-
+// agnostic. Pure.
+export function affinityPairKey(aId, bId) {
+  const x = Number(aId);
+  const y = Number(bId);
+  return x < y ? [x, y] : [y, x];
+}
+
+// Score delta for an interaction. Returns a number (possibly negative for
+// future conflict types). Pure.
+export function affinityDelta(interaction) {
+  if (!interaction) return 0;
+  return AFFINITY_DELTA[interaction.type] ?? 0;
+}
+
+// Given previous-reached milestones + new score, return newly-crossed milestone
+// keys (in ascending threshold order). Pure.
+export function newAffinityMilestones(priorReached, newScore) {
+  const reached = new Set(priorReached || []);
+  const fresh = [];
+  for (const m of AFFINITY_MILESTONES) {
+    if (reached.has(m.key)) continue;
+    if (Number(newScore) >= m.threshold) fresh.push(m.key);
+  }
+  return fresh;
+}
+
 // Probability tables. Rolls are independent per candidate pair; the first
 // matching rule wins for a given pair (priority order below).
 const PROB = {
