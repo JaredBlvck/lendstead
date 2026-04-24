@@ -13,6 +13,8 @@ import { validateNpc } from "../../game/npcs/npcValidator";
 import { validateItem } from "../../game/items/itemValidator";
 import { validateQuest } from "../../game/quests/questValidator";
 import { validateDropTable } from "../../game/drops/dropValidator";
+import { validateRegion } from "../../game/world/regions";
+import { validateFaction } from "../../game/world/factions";
 
 // Vite / vitest glob helpers — eager loads every module at test time.
 const npcModules = import.meta.glob<Record<string, unknown>>(
@@ -29,6 +31,14 @@ const questModules = import.meta.glob<Record<string, unknown>>(
 );
 const dropModules = import.meta.glob<Record<string, unknown>>(
   "../drops/!(_)*.ts",
+  { eager: true },
+);
+const regionModules = import.meta.glob<Record<string, unknown>>(
+  "../locations/!(_)*.ts",
+  { eager: true },
+);
+const factionModules = import.meta.glob<Record<string, unknown>>(
+  "../factions/!(_)*.ts",
   { eager: true },
 );
 
@@ -60,12 +70,16 @@ describe("content auto-discovery validators", () => {
   const items = collectExports(itemModules, "item_");
   const quests = collectExports(questModules, "quest_");
   const drops = collectExports(dropModules, "drop_");
+  const regions = collectExports(regionModules, "region_");
+  const factions = collectExports(factionModules, "faction_");
 
   it("discovers at least one export per domain", () => {
     expect(npcs.length, "no NPC content found").toBeGreaterThan(0);
     expect(items.length, "no item content found").toBeGreaterThan(0);
     expect(quests.length, "no quest content found").toBeGreaterThan(0);
     expect(drops.length, "no drop table content found").toBeGreaterThan(0);
+    expect(regions.length, "no region content found").toBeGreaterThan(0);
+    expect(factions.length, "no faction content found").toBeGreaterThan(0);
   });
 
   describe("npcs", () => {
@@ -116,6 +130,30 @@ describe("content auto-discovery validators", () => {
     }
   });
 
+  describe("regions", () => {
+    for (const { path, exportName, value } of regions) {
+      it(`validateRegion: ${exportName} (${path.replace(/^.*\/content\//, "")})`, () => {
+        const result = validateRegion(value) as ValidatorResult;
+        expect(
+          result.ok,
+          `validateRegion failed for ${exportName}: ${JSON.stringify(result.errors ?? result, null, 2)}`,
+        ).toBe(true);
+      });
+    }
+  });
+
+  describe("factions", () => {
+    for (const { path, exportName, value } of factions) {
+      it(`validateFaction: ${exportName} (${path.replace(/^.*\/content\//, "")})`, () => {
+        const result = validateFaction(value) as ValidatorResult;
+        expect(
+          result.ok,
+          `validateFaction failed for ${exportName}: ${JSON.stringify(result.errors ?? result, null, 2)}`,
+        ).toBe(true);
+      });
+    }
+  });
+
   describe("id uniqueness within each domain", () => {
     it("npc ids are unique", () => {
       const ids = npcs.map((n) => (n.value as { id: string }).id);
@@ -142,6 +180,20 @@ describe("content auto-discovery validators", () => {
       expect(
         new Set(ids).size,
         `duplicate drop ids in: ${ids.join(", ")}`,
+      ).toBe(ids.length);
+    });
+    it("region ids are unique", () => {
+      const ids = regions.map((n) => (n.value as { id: string }).id);
+      expect(
+        new Set(ids).size,
+        `duplicate region ids in: ${ids.join(", ")}`,
+      ).toBe(ids.length);
+    });
+    it("faction ids are unique", () => {
+      const ids = factions.map((n) => (n.value as { id: string }).id);
+      expect(
+        new Set(ids).size,
+        `duplicate faction ids in: ${ids.join(", ")}`,
       ).toBe(ids.length);
     });
   });
