@@ -7,11 +7,13 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useEngine } from '../engine/EngineContext';
 import type { Enemy, EncounterState } from '../combat/enemyTypes';
 import {
+  resolveAbilityRound,
   resolveAttackRound,
   resolveFleeAttempt,
   startEncounter,
   type PlayerCombatStats,
 } from '../combat/combatResolver';
+import { DEFAULT_PLAYER_ABILITIES, type PlayerAbility } from '../combat/playerAbilities';
 import { rollDropTable } from '../drops/dropRoller';
 import { addItem } from '../items/inventory';
 
@@ -107,7 +109,17 @@ function playerStatsFromEngine(
     dodge_chance: combat.dodge_chance,
     hp: combat.hp,
     max_hp: combat.max_hp,
+    energy: combat.energy ?? 20,
+    max_energy: combat.max_energy ?? 20,
+    ability_cooldowns: combat.ability_cooldowns ?? {},
   };
+}
+
+function resolvePlayerAbilities(
+  combat: NonNullable<ReturnType<typeof useEngine>['state']['player']['combat']>,
+): PlayerAbility[] {
+  const ids = combat.ability_ids ?? DEFAULT_PLAYER_ABILITIES.map((a) => a.id);
+  return DEFAULT_PLAYER_ABILITIES.filter((a) => ids.includes(a.id));
 }
 
 export function CombatModal({ enemy, onClose }: Props) {
@@ -181,6 +193,53 @@ export function CombatModal({ enemy, onClose }: Props) {
     setState(next);
   };
 
+  const handleAbility = (ability: PlayerAbility) => {
+    try {
+      const result = resolveAbilityRound(
+        state,
+        enemy,
+        {
+          ...playerStats,
+          hp: state.player_hp,
+          energy: engine.state.player.combat?.energy ?? playerStats.energy ?? 20,
+          ability_cooldowns: engine.state.player.combat?.ability_cooldowns ?? {},
+        },
+        ability,
+      );
+      setState(result.state);
+      // Persist energy + cooldowns back into engine state so they survive
+      // UI re-render and save/load.
+      if (combatRef.current) {
+        engine.setPlayer({
+          ...engine.state.player,
+          combat: {
+            ...combatRef.current,
+            energy: result.player_energy_after,
+            ability_cooldowns: result.ability_cooldowns_after,
+          },
+        });
+      }
+      // Emit ability_cast GameEvent for quest objective observers
+      window.__lendsteadEmitEvent?.({
+        kind: 'ability_cast',
+        payload: {
+          ability_id: ability.id,
+          kind: ability.kind,
+          target: 'enemy',
+          enemy_id: enemy.id,
+          damage_dealt: result.damage_dealt,
+          healed: result.healed,
+        },
+      });
+    } catch (e) {
+      // Bubble insufficient-energy / cooldown messages into the combat log
+      setState({
+        ...state,
+        log: [...state.log, String(e instanceof Error ? e.message : e)],
+      });
+    }
+  };
+
   const handleFlee = () => {
     const next = resolveFleeAttempt(state, enemy, {
       ...playerStats,
@@ -188,6 +247,10 @@ export function CombatModal({ enemy, onClose }: Props) {
     });
     setState(next);
   };
+
+  const abilities = resolvePlayerAbilities(engine.state.player.combat!);
+  const currentEnergy = engine.state.player.combat?.energy ?? 20;
+  const cooldowns = engine.state.player.combat?.ability_cooldowns ?? {};
 
   const enemyPct = Math.round((state.enemy_hp / state.enemy_max_hp) * 100);
   const playerPct = Math.round((state.player_hp / state.player_max_hp) * 100);
@@ -214,6 +277,17 @@ export function CombatModal({ enemy, onClose }: Props) {
           </div>
           <div style={styles.hpText}>{state.player_hp}/{state.player_max_hp}</div>
         </div>
+        <div style={styles.hpRow}>
+          <div style={styles.hpLabel}>Energy</div>
+          <div style={styles.hpBar}>
+            <div style={{
+              ...styles.hpFill,
+              width: `${Math.round((currentEnergy / (engine.state.player.combat?.max_energy ?? 20)) * 100)}%`,
+              background: '#3d6ba0',
+            }} />
+          </div>
+          <div style={styles.hpText}>{currentEnergy}/{engine.state.player.combat?.max_energy ?? 20}</div>
+        </div>
 
         <div style={styles.log}>
           {state.log.map((line, idx) => (
@@ -223,12 +297,36 @@ export function CombatModal({ enemy, onClose }: Props) {
         </div>
 
         {state.outcome === 'in_progress' && (
-          <div style={styles.actions}>
-            <button style={styles.button} onClick={handleAttack}>attack</button>
-            {enemy.fleeable && (
-              <button style={styles.fleeBtn} onClick={handleFlee}>flee</button>
-            )}
-          </div>
+          <>
+            <div style={{ ...styles.actions, flexWrap: 'wrap', marginBottom: 6 }}>
+              {abilities.map((ab) => {
+                const cd = cooldowns[ab.id] ?? 0;
+                const canUse = cd === 0 && currentEnergy >= ab.energy_cost;
+                return (
+                  <button
+                    key={ab.id}
+                    style={{
+                      ...styles.fleeBtn,
+                      ...(canUse ? {} : { opacity: 0.45, cursor: 'not-allowed' }),
+                      padding: '4px 10px',
+                      fontSize: 11,
+                    }}
+                    disabled={!canUse}
+                    onClick={() => canUse && handleAbility(ab)}
+                    title={`${ab.description} (${ab.energy_cost} energy${ab.cooldown_rounds > 0 ? `, ${ab.cooldown_rounds} cd` : ''})${cd > 0 ? ` - cooling down ${cd}` : ''}`}
+                  >
+                    {ab.name} {cd > 0 ? `(${cd})` : `(${ab.energy_cost}e)`}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={styles.actions}>
+              <button style={styles.button} onClick={handleAttack}>attack</button>
+              {enemy.fleeable && (
+                <button style={styles.fleeBtn} onClick={handleFlee}>flee</button>
+              )}
+            </div>
+          </>
         )}
 
         {state.outcome === 'victory' && (
