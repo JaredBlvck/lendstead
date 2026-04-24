@@ -12,6 +12,7 @@ export const MAX_INTERACTIONS_PER_CYCLE = 8;
 const PROB = {
   treat: 0.65,
   trade: 0.3,
+  teach: 0.25,
   report: 0.2,
   conversation: 0.15,
 };
@@ -20,6 +21,17 @@ const HEALER_ROLES = new Set(["healer"]);
 const TRADE_SELLERS = new Set(["prospector", "miner", "crafter", "smith"]);
 const TRADE_BUYERS = new Set(["forager", "forager-trader", "trader", "runner"]);
 const SCOUT_ROLES = new Set(["scout", "runner"]);
+const TEACHER_ROLES = new Set(["scholar", "organizer", "healer"]);
+const LEARNER_ROLES = new Set([
+  "crafter",
+  "smith",
+  "prospector",
+  "forager",
+  "forager-trader",
+  "runner",
+  "scout",
+  "miner",
+]);
 
 function chebyshev(a, b) {
   return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
@@ -34,7 +46,7 @@ function isWounded(npc) {
 }
 
 // Core decision — given two adjacent NPCs, return an interaction object or null.
-// Priority: treat (life-saving) > trade > report > conversation.
+// Priority: treat (life-saving) > trade > teach > report > conversation.
 function classifyPair(a, b, rand) {
   // Treat: a healer adjacent to someone wounded.
   const healer = hasRole(a, HEALER_ROLES)
@@ -94,6 +106,42 @@ function classifyPair(a, b, rand) {
           seller_role: seller.role,
           buyer_role: buyer.role,
           morale_boost: true, // both parties get a morale nudge up if possible
+        },
+      };
+    }
+  }
+
+  // Teach: scholar/organizer/healer (teacher) adjacent to a same-lane
+  // apprentice role. Knowledge transfer moment — teacher's expertise lifts the
+  // learner. Same lane constraint keeps it within-clan; cross-lane teaching
+  // would step on the narrative identity split.
+  const teacher = hasRole(a, TEACHER_ROLES)
+    ? a
+    : hasRole(b, TEACHER_ROLES)
+      ? b
+      : null;
+  const learner = teacher
+    ? teacher === a
+      ? hasRole(b, LEARNER_ROLES)
+        ? b
+        : null
+      : hasRole(a, LEARNER_ROLES)
+        ? a
+        : null
+    : null;
+  if (teacher && learner && teacher.lane === learner.lane) {
+    if (rand() < PROB.teach) {
+      return {
+        type: "teach",
+        participants: pairOf(teacher, learner),
+        outcome: {
+          teacher_id: teacher.id,
+          teacher_name: teacher.name,
+          teacher_role: teacher.role,
+          learner_id: learner.id,
+          learner_name: learner.name,
+          learner_role: learner.role,
+          morale_boost: true,
         },
       };
     }
