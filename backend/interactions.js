@@ -18,6 +18,8 @@ export const AFFINITY_DELTA = {
   trade: 0.05,
   report: 0.03,
   conversation: 0.02,
+  argument: -0.08,
+  mishap: 0, // an accident doesn't damage the bond by itself
 };
 
 export const AFFINITY_MILESTONES = [
@@ -62,6 +64,8 @@ const PROB = {
   teach: 0.25,
   report: 0.2,
   conversation: 0.15,
+  mishap: 0.015, // rare accident
+  argument: 0.04, // low-frequency friction
 };
 
 // Role families — maps specific NPC roles (scout-in-training, scout-archaeology,
@@ -249,6 +253,50 @@ function classifyPair(a, b, rand) {
     }
   }
 
+  // Mishap: rare accident when a risk-prone role (prospector, crafter) is
+  // adjacent. One participant gets hurt — engine picks the non-specialist to
+  // injure when asymmetric, otherwise either. Skips pairs already wounded.
+  const riskFamilies = new Set(["prospector", "crafter"]);
+  const risky =
+    riskFamilies.has(roleFamily(a.role)) ||
+    riskFamilies.has(roleFamily(b.role));
+  if (risky && !isWounded(a) && !isWounded(b)) {
+    if (rand() < PROB.mishap) {
+      // Victim = the non-specialist when one is a risk-prone role, else pick
+      // deterministically the second participant.
+      const victim = riskFamilies.has(roleFamily(a.role))
+        ? riskFamilies.has(roleFamily(b.role))
+          ? rand() < 0.5
+            ? a
+            : b
+          : b
+        : a;
+      return {
+        type: "mishap",
+        participants: pairOf(a, b),
+        outcome: {
+          victim_id: victim.id,
+          victim_name: victim.name,
+          condition_from: victim.condition || "healthy",
+          condition_to: "injured",
+          cause: riskFamilies.has(roleFamily(victim.role))
+            ? "workplace_accident"
+            : "bystander_injury",
+        },
+      };
+    }
+  }
+
+  // Argument: low-frequency friction fallback before conversation. Morale
+  // drops for both; affinity debits (bonds can fray).
+  if (rand() < PROB.argument) {
+    return {
+      type: "argument",
+      participants: pairOf(a, b),
+      outcome: { morale_drop: true },
+    };
+  }
+
   // Conversation: default fallback — any two adjacent NPCs not already paired
   // through a specialized interaction. Morale nudge up for both (capped).
   if (rand() < PROB.conversation) {
@@ -303,16 +351,26 @@ export function computeInteractions({ npcs, rand = Math.random }) {
 
 // Translate outcomes into NPC field updates. Returns a map
 // { [npc_id]: { morale?, condition?, last_condition_change?, skill? } }. Pure —
-// caller owns UPDATE statements. Respects morale ladder (low→med→high, capped)
+// caller owns UPDATE statements. Respects morale ladder (low↔med↔high, capped)
 // and skill cap (SKILL_CAP).
 export function applyInteractionEffects(interactions, nextCycle) {
   const moraleUp = (m) => (m === "low" ? "med" : m === "med" ? "high" : "high");
+  const moraleDown = (m) =>
+    m === "high" ? "med" : m === "med" ? "low" : "low";
   const updates = {};
   for (const it of interactions) {
     if (it.type === "treat") {
       const pid = it.outcome.patient_id;
       updates[pid] = {
         ...(updates[pid] || {}),
+        condition: it.outcome.condition_to,
+        last_condition_change: nextCycle,
+      };
+    }
+    if (it.type === "mishap") {
+      const vid = it.outcome.victim_id;
+      updates[vid] = {
+        ...(updates[vid] || {}),
         condition: it.outcome.condition_to,
         last_condition_change: nextCycle,
       };
@@ -331,6 +389,16 @@ export function applyInteractionEffects(interactions, nextCycle) {
           ...(updates[p.id] || {}),
           morale: moraleUp(cur),
           morale_seed: cur, // transient, for chained boost calc; stripped pre-write
+        };
+      }
+    }
+    if (it.outcome?.morale_drop) {
+      for (const p of it.participants) {
+        const cur = updates[p.id]?.morale_seed || p.morale || "med";
+        updates[p.id] = {
+          ...(updates[p.id] || {}),
+          morale: moraleDown(cur),
+          morale_seed: cur,
         };
       }
     }
