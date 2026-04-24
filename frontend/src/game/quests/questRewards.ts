@@ -38,6 +38,13 @@ export function applyReward(ctx: RewardContext, reward: QuestReward): RewardOutc
         notes.push('item reward missing item_id - skipped');
         break;
       }
+      // Tolerate unknown item ids: content authors may reference items not
+      // yet registered. Log a skip note rather than crashing the quest
+      // completion pipeline.
+      if (!ctx.itemLookup(itemId)) {
+        notes.push(`item reward ${itemId} references unknown item - skipped`);
+        break;
+      }
       const result = addItem(inventory, itemId, qty, ctx.itemLookup);
       inventory = result.inventory;
       if (result.leftover > 0) notes.push(`inventory full - ${result.leftover} of ${itemId} dropped`);
