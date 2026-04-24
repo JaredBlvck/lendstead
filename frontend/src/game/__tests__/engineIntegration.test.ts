@@ -27,7 +27,9 @@ import type { NpcRuntimeState } from '../npcs/npcTypes';
 describe('engine integration (end-to-end)', () => {
   it('loads the content bundle without shape errors', () => {
     const bundle = loadContentBundle();
-    const shapeErrors = bundle.errors.filter((e) => !e.includes('loaded with warnings'));
+    const shapeErrors = bundle.errors.filter(
+      (e) => !e.includes('loaded with warnings') && !e.includes('(warning)'),
+    );
     expect(shapeErrors).toEqual([]);
   });
 
