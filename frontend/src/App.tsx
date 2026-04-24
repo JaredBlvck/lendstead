@@ -18,6 +18,7 @@ import { EventBridge } from './game/engine/EventBridge';
 import { CycleEmitter } from './game/engine/CycleEmitter';
 import { BackendEventRelay } from './game/engine/BackendEventRelay';
 import { BackendStateSync } from './game/engine/BackendStateSync';
+import { EncounterHost } from './game/engine/EncounterHost';
 
 // 3D exploration view is code-split so the Three.js bundle only loads
 // when the user opens it.
@@ -107,6 +108,7 @@ export default function App() {
         <CycleEmitter />
         <BackendEventRelay />
         <BackendStateSync />
+        <EncounterHost />
         <EngineUIHost />
         <DevPanelHost />
       </>

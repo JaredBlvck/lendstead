@@ -69,6 +69,20 @@ export function translateBackendEvent(event: CycleEvent): RelayOutcome {
       });
       break;
     }
+    case 'threat_sighted': {
+      // Ride the existing GameEvent bus so EncounterHost can pick up
+      // the spawn request. Payload carries center tile + severity.
+      const center = (p.center ?? {}) as { x?: unknown; y?: unknown };
+      out.gameEvents.push({
+        kind: 'threat_sighted',
+        payload: {
+          x: Number(center.x ?? 0),
+          y: Number(center.y ?? 0),
+          severity: p.severity ?? 'minor',
+        },
+      });
+      break;
+    }
     case 'affinity_milestone': {
       const pair = Array.isArray(p.pair) ? (p.pair as string[]).join('_') : 'unknown';
       out.worldFlags[`affinity_milestone_${pair}`] = true;

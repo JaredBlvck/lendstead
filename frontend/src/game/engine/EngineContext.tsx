@@ -38,6 +38,14 @@ export interface PlayerState {
     canClimbCliffs?: boolean;
     maxSlope?: number;
   };
+  combat?: {
+    hp: number;
+    max_hp: number;
+    attack: number;
+    defense: number;
+    crit_chance: number;
+    dodge_chance: number;
+  };
 }
 
 export interface EngineState {
@@ -96,6 +104,14 @@ function freshState(): EngineState {
       location: { x: 20, y: 12 },        // starting tile near the Founding Shore
       region_id: 'region_founding_shore',
       capabilities: { canSwim: false, canClimbCliffs: false, maxSlope: 0.5 },
+      combat: {
+        hp: 20,
+        max_hp: 20,
+        attack: 3,
+        defense: 1,
+        crit_chance: 0.1,
+        dodge_chance: 0.05,
+      },
     },
     world: newWorldState(),
     inventory: emptyInventory(playerId, 28),
