@@ -10,6 +10,17 @@ import { QuestRuntimeState } from '../quests/questTypes';
 
 export const SAVE_SCHEMA_VERSION = 1;
 
+// Shop runtime state - per-NPC live stock snapshot
+export const ShopStateSnapshot = z.object({
+  npc_id: z.string(),
+  lines: z.array(z.object({
+    item_id: z.string(),
+    current_stock: z.number().int().min(0),
+    last_restocked_cycle: z.number().int(),
+  })),
+});
+export type ShopStateSnapshot = z.infer<typeof ShopStateSnapshot>;
+
 export const PlayerSnapshot = z.object({
   id: z.string(),
   location: z.object({ x: z.number(), y: z.number() }),
@@ -31,5 +42,6 @@ export const Save = z.object({
   equipment: z.array(Equipment).default([]),
   npc_runtime: z.array(NpcRuntimeState).default([]),
   quest_runtime: z.array(QuestRuntimeState).default([]),
+  shop_states: z.array(ShopStateSnapshot).default([]),
 });
 export type Save = z.infer<typeof Save>;
