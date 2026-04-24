@@ -154,6 +154,22 @@ export const audio = {
     osc.start(now);
     osc.stop(now + 0.13);
   },
+  // Footstep - soft thump
+  footstep() {
+    const c = ctx();
+    if (!c) return;
+    const now = c.currentTime;
+    const osc = c.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(90, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.08);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.05, now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+    osc.connect(g).connect(c.destination);
+    osc.start(now);
+    osc.stop(now + 0.11);
+  },
   // Walk-target set (teal chime)
   tap() {
     const c = ctx();
@@ -169,6 +185,79 @@ export const audio = {
     osc.connect(g).connect(c.destination);
     osc.start(now);
     osc.stop(now + 0.21);
+  },
+  // Ability cast cues - one distinct sound per ability kind
+  abilityCast(kind: 'terrain_shape' | 'resource_amp' | 'npc_influence' | 'protection') {
+    const c = ctx();
+    if (!c) return;
+    const now = c.currentTime;
+    if (kind === 'terrain_shape') {
+      // Deep resonance: sub bass sweep + mid harmonic
+      const osc1 = c.createOscillator();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(60, now);
+      osc1.frequency.exponentialRampToValueAtTime(120, now + 0.6);
+      const osc2 = c.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(280, now);
+      osc2.frequency.exponentialRampToValueAtTime(420, now + 0.6);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0, now);
+      g.gain.linearRampToValueAtTime(0.14, now + 0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+      osc1.connect(g);
+      osc2.connect(g);
+      g.connect(c.destination);
+      osc1.start(now); osc1.stop(now + 0.82);
+      osc2.start(now); osc2.stop(now + 0.82);
+    } else if (kind === 'resource_amp') {
+      // Chime: rising bright triple tone
+      [660, 880, 1320].forEach((f, i) => {
+        const osc = c.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = f;
+        const g = c.createGain();
+        const start = now + i * 0.08;
+        g.gain.setValueAtTime(0, start);
+        g.gain.linearRampToValueAtTime(0.1, start + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
+        osc.connect(g).connect(c.destination);
+        osc.start(start); osc.stop(start + 0.55);
+      });
+    } else if (kind === 'protection') {
+      // Shield chime: two-tone ringing with slow decay
+      const osc = c.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = 520;
+      const osc2 = c.createOscillator();
+      osc2.type = 'triangle';
+      osc2.frequency.value = 780;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.12, now);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 1.2);
+      osc.connect(g);
+      osc2.connect(g);
+      g.connect(c.destination);
+      osc.start(now); osc.stop(now + 1.22);
+      osc2.start(now); osc2.stop(now + 1.22);
+    } else if (kind === 'npc_influence') {
+      // Whispering: filtered noise burst
+      const buf = ensureNoise();
+      if (buf) {
+        const src = c.createBufferSource();
+        src.buffer = buf;
+        const filter = c.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.value = 1500;
+        filter.Q.value = 3;
+        const g = c.createGain();
+        g.gain.setValueAtTime(0, now);
+        g.gain.linearRampToValueAtTime(0.1, now + 0.1);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+        src.connect(filter).connect(g).connect(c.destination);
+        src.start(now); src.stop(now + 0.9);
+      }
+    }
   },
   // Anvil clink for smithy proximity
   anvil() {

@@ -17,6 +17,13 @@ function laneLabel(leader: LogEntry['leader']): string {
   return 'Engine (auto)';
 }
 
+function hasAutoTag(log: LogEntry): boolean {
+  // Auto-cast ability decisions get an "[auto]" prefix in effect_summary/
+  // action. Detect and render a subtle auto badge.
+  const action = log.action || '';
+  return /\[auto\]|^auto[- :]/i.test(action);
+}
+
 function laneIconChar(leader: LogEntry['leader']): string {
   if (leader === 'sr') return 'S';
   if (leader === 'jr') return 'J';
@@ -53,12 +60,14 @@ export function LogsFeed({ logs }: Props) {
         const lane = laneClass(log.leader);
         const severityClass = log.severity ? `sev-${log.severity}` : '';
         const linked = log.cause_event_id != null || log.cause_log_id != null;
+        const auto = hasAutoTag(log);
         const classes = [
           'log-entry',
           lane,
           fresh.has(log.id) && 'fresh',
           severityClass,
           linked && 'has-cause',
+          auto && 'auto-cast',
         ]
           .filter(Boolean)
           .join(' ');

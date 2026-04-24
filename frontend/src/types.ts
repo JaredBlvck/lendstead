@@ -14,7 +14,20 @@ export interface World {
   // until then.
   sr_energy?: number;
   jr_energy?: number;
-  breakthroughs?: string[];
+  breakthroughs?: Array<{ leader: 'sr' | 'jr'; unlocks: string; at_cycle: number }>;
+  // Backend-persisted cumulative magic traces (Jr's backend update).
+  // When present, AbilityTracesLayer prefers this over re-aggregating
+  // from event history each poll.
+  magic_monuments?: Array<{
+    x: number;
+    y: number;
+    kind: string;
+    casts: number;
+    dominant_leader: 'sr' | 'jr';
+    origin_cycle: number;
+    last_cycle: number;
+    leader_counts: { sr: number; jr: number };
+  }>;
 }
 
 export type AbilityName = 'terrain_shape' | 'resource_amp' | 'npc_influence' | 'protection';

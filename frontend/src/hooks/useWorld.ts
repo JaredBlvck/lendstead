@@ -44,6 +44,30 @@ export function useAutoCycleStatus() {
   return useQuery({ queryKey: ['auto-cycle'], queryFn: api.autoCycleStatus });
 }
 
+export function useQuests(status?: 'accepted' | 'completed' | 'declined') {
+  return useQuery({
+    queryKey: ['quests', status ?? 'all'],
+    queryFn: () => api.quests(status),
+  });
+}
+
+export function useQuestTransition() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.questTransition,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['quests'] });
+    },
+  });
+}
+
+export function useAffinity(opts: { min_score?: number; npc_id?: number; limit?: number } = {}) {
+  return useQuery({
+    queryKey: ['affinity', opts.min_score ?? 'all', opts.npc_id ?? 'all', opts.limit ?? 100],
+    queryFn: () => api.affinity(opts),
+  });
+}
+
 export function useAutoCycleControl() {
   const qc = useQueryClient();
   const invalidate = () => {

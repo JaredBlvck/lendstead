@@ -12,6 +12,7 @@ export interface AbilityVFX {
   seenAt: number;
   target_data: Record<string, unknown>;
   lifespanMs: number;
+  auto: boolean;  // engine-driven fallback cast vs leader-authored
 }
 
 // How long the VFX renders client-side, regardless of backend duration
@@ -41,6 +42,8 @@ export function toAbilityVFX(
   const seenAt = firstSeen.get(event.id) ?? now;
   firstSeen.set(event.id, seenAt);
 
+  const auto = payload.auto === true || targetData.auto === true;
+
   return {
     eventId: event.id,
     leader,
@@ -49,6 +52,7 @@ export function toAbilityVFX(
     seenAt,
     target_data: targetData,
     lifespanMs: VFX_LIFESPAN[abilityName],
+    auto,
   };
 }
 
