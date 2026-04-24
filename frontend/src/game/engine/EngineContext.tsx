@@ -26,6 +26,7 @@ import { buildSave } from '../save/saveGame';
 import { loadSave } from '../save/loadGame';
 import type { PlayerSnapshot } from '../save/saveTypes';
 import type { ShopState } from '../npcs/trade';
+import type { DiscoveryState } from '../archaeology/carvingTypes';
 
 const SAVE_SLOT = 'lendstead_save';
 
@@ -56,6 +57,7 @@ export interface EngineState {
   questRuntime: QuestRuntimeState[];
   npcRuntime: NpcRuntimeState[];
   shopStates: ShopState[];
+  discoveryStates: DiscoveryState[];
 }
 
 type Action =
@@ -67,7 +69,8 @@ type Action =
   | { kind: 'set_quest_runtime'; next: QuestRuntimeState[] }
   | { kind: 'upsert_quest_runtime'; row: QuestRuntimeState }
   | { kind: 'set_npc_runtime'; next: NpcRuntimeState[] }
-  | { kind: 'upsert_shop_state'; row: ShopState };
+  | { kind: 'upsert_shop_state'; row: ShopState }
+  | { kind: 'upsert_discovery_state'; row: DiscoveryState };
 
 function reducer(state: EngineState, action: Action): EngineState {
   switch (action.kind) {
@@ -91,6 +94,13 @@ function reducer(state: EngineState, action: Action): EngineState {
         ? state.shopStates.map((s) => (s.npc_id === action.row.npc_id ? action.row : s))
         : [...state.shopStates, action.row];
       return { ...state, shopStates: next };
+    }
+    case 'upsert_discovery_state': {
+      const existing = state.discoveryStates.find((s) => s.site_id === action.row.site_id);
+      const next = existing
+        ? state.discoveryStates.map((s) => (s.site_id === action.row.site_id ? action.row : s))
+        : [...state.discoveryStates, action.row];
+      return { ...state, discoveryStates: next };
     }
     default: return state;
   }
@@ -119,6 +129,7 @@ function freshState(): EngineState {
     questRuntime: [],
     npcRuntime: [],
     shopStates: [],
+    discoveryStates: [],
   };
 }
 
@@ -142,6 +153,8 @@ function loadFromStorage(): EngineState | null {
       questRuntime: s.quest_runtime,
       npcRuntime: s.npc_runtime,
       shopStates: (s.shop_states ?? []) as ShopState[],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      discoveryStates: ((s as any).discovery_states ?? []) as DiscoveryState[],
     };
   } catch {
     return null;
@@ -179,6 +192,7 @@ export interface EngineApi {
   setQuestRuntime: (rows: QuestRuntimeState[]) => void;
   setNpcRuntime: (rows: NpcRuntimeState[]) => void;
   upsertShopState: (row: ShopState) => void;
+  upsertDiscoveryState: (row: DiscoveryState) => void;
   resetToFresh: () => void;
 }
 
@@ -214,6 +228,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     setQuestRuntime: (rows) => dispatch({ kind: 'set_quest_runtime', next: rows }),
     setNpcRuntime: (rows) => dispatch({ kind: 'set_npc_runtime', next: rows }),
     upsertShopState: (row) => dispatch({ kind: 'upsert_shop_state', row }),
+    upsertDiscoveryState: (row) => dispatch({ kind: 'upsert_discovery_state', row }),
     resetToFresh: () => dispatch({ kind: 'set_state', next: freshState() }),
   }), [bundle, state]);
 

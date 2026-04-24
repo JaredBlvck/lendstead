@@ -12,6 +12,7 @@ import { QuestLog } from './QuestLog';
 import { InventoryHUD } from './InventoryHUD';
 import { DialogueModal } from './DialogueModal';
 import { CraftingPanel } from './CraftingPanel';
+import { DiscoveryPanel } from './DiscoveryPanel';
 
 declare global {
   interface Window {
@@ -40,6 +41,7 @@ export function EngineUIHost() {
   const [questLogOpen, setQuestLogOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
   const [craftingOpen, setCraftingOpen] = useState(false);
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [dialogueNpc, setDialogueNpc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,6 +58,7 @@ export function EngineUIHost() {
       if (e.key === 'q' || e.key === 'Q') setQuestLogOpen((v) => !v);
       if (e.key === 'i' || e.key === 'I') setInventoryOpen((v) => !v);
       if (e.key === 'c' || e.key === 'C') setCraftingOpen((v) => !v);
+      if (e.key === 'k' || e.key === 'K') setDiscoveryOpen((v) => !v);
       if (e.key === 'Escape') setDialogueNpc(null);
     };
     window.addEventListener('keydown', onKey);
@@ -72,6 +75,7 @@ export function EngineUIHost() {
       <QuestLog open={questLogOpen} onToggle={() => setQuestLogOpen(false)} />
       {inventoryOpen && !craftingOpen && <InventoryHUD />}
       {craftingOpen && <CraftingPanel onClose={() => setCraftingOpen(false)} />}
+      {discoveryOpen && <DiscoveryPanel onClose={() => setDiscoveryOpen(false)} />}
       <DialogueModal npcId={dialogueNpc} onClose={() => setDialogueNpc(null)} />
     </>
   );
