@@ -33,6 +33,7 @@ import {
   monumentKind,
   monumentPosition,
   applyCast,
+  shouldAutoCastResourceAmp,
 } from "./magic.js";
 
 const app = express();
@@ -696,41 +697,37 @@ async function runCycleAdvance() {
     }
 
     // ---- MAGIC: auto-cast — fills the void when rulers are idle during a
-    // resource crisis. Conservative on purpose: only resource_amp (non-spatial,
-    // reversible), only on 3+ day deficit, only when the leader has been silent
-    // for 10+ cycles, max 1 per advance. Sustenance is Jr's lane (Architect).
+    // resource crisis. Decision logic lives in magic.js (pure, unit-tested);
+    // this block owns persistence only. Max 1 per advance, food > water.
     const autoCasts = [];
     {
       const lastJrCastCycle = overuseRecent
         .filter((a) => a.leader === "jr")
         .reduce((max, a) => Math.max(max, Number(a.cycle_used)), -1);
-      const jrIdleCycles =
-        lastJrCastCycle < 0 ? Infinity : nextCycle - lastJrCastCycle;
-      const hasActiveAmp = (kind) =>
-        activeAbilities.some(
-          (a) =>
-            a.ability_name === "resource_amp" &&
-            (a.target_data || {}).kind === kind &&
-            Number(a.expires_cycle || 0) > nextCycle,
-        );
+      const ctx = {
+        balance,
+        jrEnergy: jrEnergyNext,
+        activeAbilities,
+        lastJrCastCycle,
+        nextCycle,
+      };
+      const decision =
+        shouldAutoCastResourceAmp({ ...ctx, kind: "food" }) ||
+        shouldAutoCastResourceAmp({ ...ctx, kind: "water" });
 
-      const tryAutoCast = async (kind) => {
-        if (autoCasts.length > 0) return;
-        if (jrIdleCycles < 10) return;
-        if (jrEnergyNext < 25) return;
-        if (hasActiveAmp(kind)) return;
+      if (decision) {
         const target_data = {
-          kind,
-          multiplier: 1.5,
-          duration_cycles: 5,
+          kind: decision.kind,
+          multiplier: decision.multiplier,
+          duration_cycles: decision.duration_cycles,
           auto: true,
         };
         const effectSummary = flavorSummary("resource_amp", target_data);
-        const expires = nextCycle + 5;
+        const expires = nextCycle + decision.duration_cycles;
         await client.query(
           `INSERT INTO abilities (leader, ability_name, target_data, energy_cost, cycle_used, expires_cycle, effect_summary)
-           VALUES ('jr', 'resource_amp', $1::jsonb, 25, $2, $3, $4)`,
-          [target_data, nextCycle, expires, effectSummary],
+           VALUES ('jr', 'resource_amp', $1::jsonb, $2, $3, $4, $5)`,
+          [target_data, decision.cost, nextCycle, expires, effectSummary],
         );
         await client.query(
           `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'ability', $2)`,
@@ -751,24 +748,21 @@ async function runCycleAdvance() {
            VALUES ($1, 'jr', $2, $3)`,
           [
             nextCycle,
-            `[auto] amplified ${kind} production x1.5 for 5 cycles`,
-            `engine response: ${kind} deficit at ${balance[`${kind}_deficit_days`] || 0} days, Jr idle ${jrIdleCycles} cycles`,
+            `[auto] amplified ${decision.kind} production x${decision.multiplier} for ${decision.duration_cycles} cycles`,
+            `engine response: ${decision.kind} deficit ${decision.deficit_days}d, Jr idle ${decision.idle_cycles ?? "infinite"} cycles`,
           ],
         );
-        jrEnergyNext = Math.max(0, jrEnergyNext - 25);
+        jrEnergyNext = Math.max(0, jrEnergyNext - decision.cost);
         autoCasts.push({
           leader: "jr",
           ability_name: "resource_amp",
-          kind,
-          multiplier: 1.5,
-          cost: 25,
+          kind: decision.kind,
+          multiplier: decision.multiplier,
+          cost: decision.cost,
           expires_cycle: expires,
-          reason: `${kind}_deficit_${balance[`${kind}_deficit_days`] || 0}d`,
+          reason: `${decision.kind}_deficit_${decision.deficit_days}d`,
         });
-      };
-
-      if ((balance.food_deficit_days || 0) >= 3) await tryAutoCast("food");
-      if ((balance.water_deficit_days || 0) >= 3) await tryAutoCast("water");
+      }
     }
 
     const updated = await client.query(

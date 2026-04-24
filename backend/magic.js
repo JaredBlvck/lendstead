@@ -271,6 +271,53 @@ export function applyCast(monuments, { x, y, kind, leader, cycle }) {
   return arr;
 }
 
+// Auto-cast decision — pure. Returns a cast spec to execute, or null when
+// the engine should stay silent. Jr-only in v1 (sustenance is Architect's
+// lane). Deliberately conservative to avoid interfering with active rulers.
+// Thresholds: 3+ deficit days, 10+ idle cycles, energy >= 25, no active amp
+// of the same kind.
+export const AUTO_CAST_IDLE_THRESHOLD = 10;
+export const AUTO_CAST_DEFICIT_THRESHOLD = 3;
+export const AUTO_CAST_RESOURCE_AMP_COST = 25;
+export const AUTO_CAST_RESOURCE_AMP_MULTIPLIER = 1.5;
+export const AUTO_CAST_RESOURCE_AMP_DURATION = 5;
+
+export function shouldAutoCastResourceAmp({
+  kind,
+  balance,
+  jrEnergy,
+  activeAbilities,
+  lastJrCastCycle,
+  nextCycle,
+}) {
+  if (kind !== "food" && kind !== "water") return null;
+  const deficitDays = Number(balance?.[`${kind}_deficit_days`] || 0);
+  if (deficitDays < AUTO_CAST_DEFICIT_THRESHOLD) return null;
+  const idleCycles =
+    lastJrCastCycle == null || lastJrCastCycle < 0
+      ? Infinity
+      : nextCycle - lastJrCastCycle;
+  if (idleCycles < AUTO_CAST_IDLE_THRESHOLD) return null;
+  if (Number(jrEnergy || 0) < AUTO_CAST_RESOURCE_AMP_COST) return null;
+  const hasActive = (activeAbilities || []).some(
+    (a) =>
+      a.ability_name === "resource_amp" &&
+      (a.target_data || {}).kind === kind &&
+      Number(a.expires_cycle || 0) > nextCycle,
+  );
+  if (hasActive) return null;
+  return {
+    leader: "jr",
+    ability_name: "resource_amp",
+    kind,
+    multiplier: AUTO_CAST_RESOURCE_AMP_MULTIPLIER,
+    duration_cycles: AUTO_CAST_RESOURCE_AMP_DURATION,
+    cost: AUTO_CAST_RESOURCE_AMP_COST,
+    idle_cycles: idleCycles === Infinity ? null : idleCycles,
+    deficit_days: deficitDays,
+  };
+}
+
 export function flavorSummary(ability_name, target_data) {
   const td = target_data || {};
   switch (ability_name) {
