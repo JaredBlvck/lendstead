@@ -17,28 +17,57 @@ const PROB = {
   conversation: 0.15,
 };
 
-const HEALER_ROLES = new Set(["healer"]);
-const TRADE_SELLERS = new Set(["prospector", "miner", "crafter", "smith"]);
-const TRADE_BUYERS = new Set(["forager", "forager-trader", "trader", "runner"]);
-const SCOUT_ROLES = new Set(["scout", "runner"]);
-const TEACHER_ROLES = new Set(["scholar", "organizer", "healer"]);
-const LEARNER_ROLES = new Set([
+// Role families — maps specific NPC roles (scout-in-training, scout-archaeology,
+// inland-scout, carpenter, potter, fisher, hauler, ...) into broad categories
+// the interaction engine cares about. Substring + exact hybrid: new role
+// variants get grouped by semantic lineage rather than requiring an exact
+// whitelist entry.
+function roleFamily(role) {
+  const r = (role || "").toLowerCase();
+  if (!r) return "other";
+  if (r === "healer") return "healer";
+  if (r === "scholar" || r.includes("planner") || r.includes("marker"))
+    return "scholar";
+  if (r === "organizer") return "organizer";
+  if (r.includes("scout") || r === "ranger" || r === "watcher") return "scout";
+  if (r === "runner" || r === "hauler") return "runner";
+  if (
+    r.includes("forager") ||
+    r === "gatherer" ||
+    r === "fisher" ||
+    r === "trader"
+  )
+    return "forager";
+  if (r === "prospector" || r === "miner") return "prospector";
+  if (
+    r === "crafter" ||
+    r === "smith" ||
+    r === "carpenter" ||
+    r === "toolmaker" ||
+    r === "potter"
+  )
+    return "crafter";
+  return "other";
+}
+const HEALER_FAMILIES = new Set(["healer"]);
+const TRADE_SELLERS = new Set(["prospector", "crafter"]);
+const TRADE_BUYERS = new Set(["forager", "runner"]);
+const SCOUT_FAMILIES = new Set(["scout", "runner"]);
+const TEACHER_FAMILIES = new Set(["scholar", "organizer", "healer"]);
+const LEARNER_FAMILIES = new Set([
   "crafter",
-  "smith",
   "prospector",
   "forager",
-  "forager-trader",
   "runner",
   "scout",
-  "miner",
 ]);
 
 function chebyshev(a, b) {
   return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 }
 
-function hasRole(npc, roleSet) {
-  return roleSet.has((npc.role || "").toLowerCase());
+function hasRole(npc, familySet) {
+  return familySet.has(roleFamily(npc.role));
 }
 
 function isWounded(npc) {
@@ -49,9 +78,9 @@ function isWounded(npc) {
 // Priority: treat (life-saving) > trade > teach > report > conversation.
 function classifyPair(a, b, rand) {
   // Treat: a healer adjacent to someone wounded.
-  const healer = hasRole(a, HEALER_ROLES)
+  const healer = hasRole(a, HEALER_FAMILIES)
     ? a
-    : hasRole(b, HEALER_ROLES)
+    : hasRole(b, HEALER_FAMILIES)
       ? b
       : null;
   const patient = healer
@@ -115,17 +144,17 @@ function classifyPair(a, b, rand) {
   // apprentice role. Knowledge transfer moment — teacher's expertise lifts the
   // learner. Same lane constraint keeps it within-clan; cross-lane teaching
   // would step on the narrative identity split.
-  const teacher = hasRole(a, TEACHER_ROLES)
+  const teacher = hasRole(a, TEACHER_FAMILIES)
     ? a
-    : hasRole(b, TEACHER_ROLES)
+    : hasRole(b, TEACHER_FAMILIES)
       ? b
       : null;
   const learner = teacher
     ? teacher === a
-      ? hasRole(b, LEARNER_ROLES)
+      ? hasRole(b, LEARNER_FAMILIES)
         ? b
         : null
-      : hasRole(a, LEARNER_ROLES)
+      : hasRole(a, LEARNER_FAMILIES)
         ? a
         : null
     : null;
@@ -148,9 +177,9 @@ function classifyPair(a, b, rand) {
   }
 
   // Report: scout-role adjacent to anyone on the opposite lane.
-  const scout = hasRole(a, SCOUT_ROLES)
+  const scout = hasRole(a, SCOUT_FAMILIES)
     ? a
-    : hasRole(b, SCOUT_ROLES)
+    : hasRole(b, SCOUT_FAMILIES)
       ? b
       : null;
   const reportee = scout ? (scout === a ? b : a) : null;
