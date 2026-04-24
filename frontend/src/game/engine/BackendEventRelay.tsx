@@ -83,6 +83,21 @@ export function translateBackendEvent(event: CycleEvent): RelayOutcome {
       });
       break;
     }
+    case 'ability': {
+      // Leader (Sr/Jr) magic cast in backend engine -> ability_cast on
+      // the client so quests tracking ability use across either lane
+      // advance. Payload source is backend magic.js.
+      out.gameEvents.push({
+        kind: 'ability_cast',
+        payload: {
+          ability_id: String(p.ability_name ?? p.ability_id ?? 'unknown'),
+          source: 'leader',
+          leader: p.leader,
+          auto: Boolean(p.auto),
+        },
+      });
+      break;
+    }
     case 'affinity_milestone': {
       const pair = Array.isArray(p.pair) ? (p.pair as string[]).join('_') : 'unknown';
       out.worldFlags[`affinity_milestone_${pair}`] = true;

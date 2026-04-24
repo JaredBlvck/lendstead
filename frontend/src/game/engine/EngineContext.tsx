@@ -46,6 +46,10 @@ export interface PlayerState {
     defense: number;
     crit_chance: number;
     dodge_chance: number;
+    energy?: number;
+    max_energy?: number;
+    ability_cooldowns?: Record<string, number>;
+    ability_ids?: string[];   // unlocked ability ids from playerAbilities
   };
 }
 
@@ -121,6 +125,10 @@ function freshState(): EngineState {
         defense: 1,
         crit_chance: 0.1,
         dodge_chance: 0.05,
+        energy: 20,
+        max_energy: 20,
+        ability_cooldowns: {},
+        ability_ids: ['pability_heavy_strike', 'pability_guard', 'pability_mend'],
       },
     },
     world: newWorldState(),
