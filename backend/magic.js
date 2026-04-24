@@ -214,6 +214,63 @@ export function overuseDetection(
   };
 }
 
+// Monument derivation — only spatial abilities persist a tile-indexed trace.
+// resource_amp has no tile target; npc_influence mutates NPCs, not the map.
+export function monumentKind(ability_name) {
+  if (ability_name === "terrain_shape") return "obelisk";
+  if (ability_name === "protection") return "protection";
+  return null;
+}
+
+export function monumentPosition(ability_name, target_data) {
+  const td = target_data || {};
+  if (
+    (ability_name === "terrain_shape" || ability_name === "protection") &&
+    Array.isArray(td.tile) &&
+    td.tile.length === 2
+  ) {
+    return [Number(td.tile[0]), Number(td.tile[1])];
+  }
+  return null;
+}
+
+// Upsert a cast into a monuments array. Matches on (x, y, kind); increments
+// casts + leader_counts + last_cycle on match, otherwise appends. Pure —
+// server.js owns persistence.
+export function applyCast(monuments, { x, y, kind, leader, cycle }) {
+  const arr = Array.isArray(monuments) ? [...monuments] : [];
+  const idx = arr.findIndex((m) => m.x === x && m.y === y && m.kind === kind);
+  if (idx === -1) {
+    arr.push({
+      x,
+      y,
+      kind,
+      casts: 1,
+      dominant_leader: leader,
+      origin_cycle: cycle,
+      last_cycle: cycle,
+      leader_counts: {
+        sr: leader === "sr" ? 1 : 0,
+        jr: leader === "jr" ? 1 : 0,
+      },
+    });
+    return arr;
+  }
+  const m = arr[idx];
+  const counts = {
+    sr: (m.leader_counts?.sr || 0) + (leader === "sr" ? 1 : 0),
+    jr: (m.leader_counts?.jr || 0) + (leader === "jr" ? 1 : 0),
+  };
+  arr[idx] = {
+    ...m,
+    casts: (m.casts || 0) + 1,
+    last_cycle: cycle,
+    leader_counts: counts,
+    dominant_leader: counts.sr >= counts.jr ? "sr" : "jr",
+  };
+  return arr;
+}
+
 export function flavorSummary(ability_name, target_data) {
   const td = target_data || {};
   switch (ability_name) {

@@ -27,6 +27,9 @@ import {
   protectionAt,
   overuseDetection,
   flavorSummary,
+  monumentKind,
+  monumentPosition,
+  applyCast,
 } from "./magic.js";
 
 const app = express();
@@ -1092,6 +1095,25 @@ app.post("/api/abilities", async (req, res, next) => {
         },
       ],
     );
+
+    // Persist a cumulative monument trace for spatial abilities. Survives
+    // event pruning + lets the frontend cold-read traces from world.magic_monuments
+    // instead of replaying /api/events history.
+    const mKind = monumentKind(ability_name);
+    const mPos = monumentPosition(ability_name, finalTarget);
+    if (mKind && mPos) {
+      const nextMonuments = applyCast(world.magic_monuments, {
+        x: mPos[0],
+        y: mPos[1],
+        kind: mKind,
+        leader,
+        cycle: world.cycle,
+      });
+      await client.query(
+        "UPDATE world SET magic_monuments = $1::jsonb WHERE id = $2",
+        [JSON.stringify(nextMonuments), world.id],
+      );
+    }
 
     await client.query("COMMIT");
     res.json({

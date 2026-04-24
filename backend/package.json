@@ -5,7 +5,7 @@
   "description": "Lendstead civilization sim — backend API + cycle engine",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
+    "start": "node migrate.js && node server.js",
     "migrate": "node migrate.js",
     "seed": "node seed.js"
   },
