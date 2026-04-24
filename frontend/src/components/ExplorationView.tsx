@@ -38,6 +38,8 @@ import {
 import { AffinityMilestoneBanner } from './AffinityMilestoneBanner';
 import { BondedPairsLayer } from './BondedPairsLayer';
 import { useAffinity } from '../hooks/useWorld';
+import { ContentNpcsInScene } from '../game/scene/ContentNpcsInScene';
+import { PlayerTileEmitter } from '../game/scene/PlayerTileEmitter';
 import { RulerAvatar } from './RulerAvatar';
 import { AbilityVFXLayer } from './AbilityVFXLayer';
 import { BreakthroughBanner } from './BreakthroughBanner';
@@ -1920,6 +1922,10 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         </EffectComposer>
         {mode === 'tp' && <PlayerAvatar playerRef={playerRef} />}
+        {/* Engine-driven content NPCs (move via shared A*, click to talk) */}
+        <ContentNpcsInScene tiles={tiles} heightAt={heightAt} />
+        {/* Emit reach_tile GameEvents when the player crosses tiles */}
+        <PlayerTileEmitter playerRef={playerRef} />
         {mode === 'orbit' && (
           <OrbitControls
             makeDefault
