@@ -635,11 +635,11 @@ async function runCycleAdvance() {
     const infraTokensStr = JSON.stringify(current.infrastructure || {});
     const templeActive = /temple/i.test(infraTokensStr);
     const regen = templeActive ? REGEN_WITH_TEMPLE : REGEN_BASE;
-    const srEnergyNext = Math.min(
+    let srEnergyNext = Math.min(
       ENERGY_CAP,
       Number(current.sr_energy || 0) + regen,
     );
-    const jrEnergyNext = Math.min(
+    let jrEnergyNext = Math.min(
       ENERGY_CAP,
       Number(current.jr_energy || 0) + regen,
     );
@@ -693,6 +693,82 @@ async function runCycleAdvance() {
         trust_drift_applied: o.trust_drift,
         victim_count: trustVictims.length,
       });
+    }
+
+    // ---- MAGIC: auto-cast — fills the void when rulers are idle during a
+    // resource crisis. Conservative on purpose: only resource_amp (non-spatial,
+    // reversible), only on 3+ day deficit, only when the leader has been silent
+    // for 10+ cycles, max 1 per advance. Sustenance is Jr's lane (Architect).
+    const autoCasts = [];
+    {
+      const lastJrCastCycle = overuseRecent
+        .filter((a) => a.leader === "jr")
+        .reduce((max, a) => Math.max(max, Number(a.cycle_used)), -1);
+      const jrIdleCycles =
+        lastJrCastCycle < 0 ? Infinity : nextCycle - lastJrCastCycle;
+      const hasActiveAmp = (kind) =>
+        activeAbilities.some(
+          (a) =>
+            a.ability_name === "resource_amp" &&
+            (a.target_data || {}).kind === kind &&
+            Number(a.expires_cycle || 0) > nextCycle,
+        );
+
+      const tryAutoCast = async (kind) => {
+        if (autoCasts.length > 0) return;
+        if (jrIdleCycles < 10) return;
+        if (jrEnergyNext < 25) return;
+        if (hasActiveAmp(kind)) return;
+        const target_data = {
+          kind,
+          multiplier: 1.5,
+          duration_cycles: 5,
+          auto: true,
+        };
+        const effectSummary = flavorSummary("resource_amp", target_data);
+        const expires = nextCycle + 5;
+        await client.query(
+          `INSERT INTO abilities (leader, ability_name, target_data, energy_cost, cycle_used, expires_cycle, effect_summary)
+           VALUES ('jr', 'resource_amp', $1::jsonb, 25, $2, $3, $4)`,
+          [target_data, nextCycle, expires, effectSummary],
+        );
+        await client.query(
+          `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'ability', $2)`,
+          [
+            nextCycle,
+            {
+              leader: "jr",
+              ability_name: "resource_amp",
+              target_data,
+              expires_cycle: expires,
+              effect_summary: effectSummary,
+              auto: true,
+            },
+          ],
+        );
+        await client.query(
+          `INSERT INTO logs (cycle, leader, action, reasoning)
+           VALUES ($1, 'jr', $2, $3)`,
+          [
+            nextCycle,
+            `[auto] amplified ${kind} production x1.5 for 5 cycles`,
+            `engine response: ${kind} deficit at ${balance[`${kind}_deficit_days`] || 0} days, Jr idle ${jrIdleCycles} cycles`,
+          ],
+        );
+        jrEnergyNext = Math.max(0, jrEnergyNext - 25);
+        autoCasts.push({
+          leader: "jr",
+          ability_name: "resource_amp",
+          kind,
+          multiplier: 1.5,
+          cost: 25,
+          expires_cycle: expires,
+          reason: `${kind}_deficit_${balance[`${kind}_deficit_days`] || 0}d`,
+        });
+      };
+
+      if ((balance.food_deficit_days || 0) >= 3) await tryAutoCast("food");
+      if ((balance.water_deficit_days || 0) >= 3) await tryAutoCast("water");
     }
 
     const updated = await client.query(
@@ -756,6 +832,7 @@ async function runCycleAdvance() {
             injuries: injuriesUsed,
             structure_damage: structureDamageUsed,
           },
+          auto_casts: autoCasts,
         },
       ],
     );
@@ -834,6 +911,7 @@ async function runCycleAdvance() {
         overuse: overuseConsequences,
         active_abilities: activeAbilities.length,
         terrain_reverts: expiringTerrainShapes.length,
+        auto_casts: autoCasts,
       },
       events: [advanceEvent.rows[0], ...persistedRolled],
     };
