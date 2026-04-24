@@ -35,6 +35,10 @@ import {
   applyCast,
   shouldAutoCastResourceAmp,
 } from "./magic.js";
+import {
+  computeInteractions,
+  applyInteractionEffects,
+} from "./interactions.js";
 
 const app = express();
 app.use(cors());
@@ -319,6 +323,60 @@ async function runCycleAdvance() {
         ]);
         position_deltas.push({ id: n.id, name: n.name, from, to });
       }
+    }
+
+    // Sync post-jitter positions into aliveNpcs so adjacency + downstream
+    // consequence logic see the just-moved coordinates.
+    for (const d of position_deltas) {
+      const n = aliveNpcs.find((x) => x.id === d.id);
+      if (n) {
+        n.x = d.to.x;
+        n.y = d.to.y;
+      }
+    }
+
+    // ---- NPC-to-NPC interactions: role-compatible adjacent pairs roll for
+    // treat / trade / report / conversation. Pure decision in interactions.js;
+    // this block owns persistence + event emission.
+    const interactions = computeInteractions({ npcs: aliveNpcs });
+    const interactionEffects = applyInteractionEffects(interactions, nextCycle);
+    for (const [idStr, fx] of Object.entries(interactionEffects)) {
+      const id = Number(idStr);
+      const cols = [];
+      const vals = [];
+      if (fx.morale) {
+        vals.push(fx.morale);
+        cols.push(`morale = $${vals.length}`);
+      }
+      if (fx.condition) {
+        vals.push(fx.condition);
+        cols.push(`condition = $${vals.length}`);
+      }
+      if (fx.last_condition_change) {
+        vals.push(fx.last_condition_change);
+        cols.push(`last_condition_change = $${vals.length}`);
+      }
+      if (!cols.length) continue;
+      vals.push(id);
+      await client.query(
+        `UPDATE npcs SET ${cols.join(", ")} WHERE id = $${vals.length}`,
+        vals,
+      );
+      const n = aliveNpcs.find((x) => x.id === id);
+      if (n) Object.assign(n, fx);
+    }
+    for (const it of interactions) {
+      await client.query(
+        `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'npc_interaction', $2)`,
+        [
+          nextCycle,
+          {
+            type: it.type,
+            participants: it.participants,
+            outcome: it.outcome,
+          },
+        ],
+      );
     }
 
     // ---- Severity escalation: count recent same-kind events (last 5 cycles)
@@ -827,6 +885,7 @@ async function runCycleAdvance() {
             structure_damage: structureDamageUsed,
           },
           auto_casts: autoCasts,
+          interactions_count: interactions.length,
         },
       ],
     );
@@ -906,6 +965,7 @@ async function runCycleAdvance() {
         active_abilities: activeAbilities.length,
         terrain_reverts: expiringTerrainShapes.length,
         auto_casts: autoCasts,
+        interactions,
       },
       events: [advanceEvent.rows[0], ...persistedRolled],
     };
