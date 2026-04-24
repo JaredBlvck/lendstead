@@ -14,6 +14,8 @@ import { QuestRegistry } from '../quests/questEngine';
 import { NpcRegistry } from '../npcs/npcRegistry';
 import { FactionRegistry, validateFaction, type Faction } from '../world/factions';
 import { RegionRegistry, validateRegion, type Region } from '../world/regions';
+import { EnemyRegistry } from '../combat/enemyRegistry';
+import { validateEnemy } from '../combat/enemyValidator';
 import { validateItem } from '../items/itemValidator';
 import { validateQuest } from '../quests/questValidator';
 import { validateNpc } from '../npcs/npcValidator';
@@ -22,6 +24,7 @@ import type { Item } from '../items/itemTypes';
 import type { Quest } from '../quests/questTypes';
 import type { Npc } from '../npcs/npcTypes';
 import type { DropTable } from '../drops/dropTypes';
+import type { Enemy } from '../combat/enemyTypes';
 
 // Vite eager glob: loads every matching file at build time.
 // `!(_)` excludes files that start with an underscore (the templates).
@@ -76,6 +79,14 @@ const regionTemplates = import.meta.glob<Record<string, unknown>>(
   '../../content/locations/_*.ts',
   { eager: true },
 );
+const enemyModules = import.meta.glob<Record<string, unknown>>(
+  '../../content/enemies/!(_)*.ts',
+  { eager: true },
+);
+const enemyTemplates = import.meta.glob<Record<string, unknown>>(
+  '../../content/enemies/_*.ts',
+  { eager: true },
+);
 
 interface ExportEntry<T> {
   path: string;
@@ -110,6 +121,7 @@ export interface ContentBundle {
   npcs: NpcRegistry;
   factions: FactionRegistry;
   regions: RegionRegistry;
+  enemies: EnemyRegistry;
   drops: DropTable[];
   errors: string[];
   stats: {
@@ -119,6 +131,7 @@ export interface ContentBundle {
     drops: number;
     factions: number;
     regions: number;
+    enemies: number;
   };
 }
 
@@ -129,6 +142,7 @@ export function loadContentBundle(): ContentBundle {
   const npcs = new NpcRegistry();
   const factions = new FactionRegistry();
   const regions = new RegionRegistry();
+  const enemies = new EnemyRegistry();
   const drops: DropTable[] = [];
 
   // Items - register BEFORE drops so drop-table validators can cross-ref.
@@ -251,6 +265,24 @@ export function loadContentBundle(): ContentBundle {
     regions.register(entry.value);
   }
 
+  // Enemies
+  const allEnemyEntries = [
+    ...collectExports<Enemy>(enemyTemplates, 'enemy_'),
+    ...collectExports<Enemy>(enemyModules, 'enemy_'),
+  ];
+  for (const entry of allEnemyEntries) {
+    const result = validateEnemy(entry.value);
+    if (!result.ok) {
+      errors.push(`enemy ${entry.value.id} (${entry.path}): ${result.errors.join(', ')}`);
+      continue;
+    }
+    if (enemies.has(entry.value.id)) {
+      errors.push(`enemy ${entry.value.id} (${entry.path}): duplicate id, skipped`);
+      continue;
+    }
+    enemies.register(entry.value);
+  }
+
   // Cross-reference pass: warn when content references an unregistered
   // region or faction. Warnings, not fatal - content can ship ahead of
   // its region / faction definition.
@@ -277,6 +309,7 @@ export function loadContentBundle(): ContentBundle {
     npcs,
     factions,
     regions,
+    enemies,
     drops,
     errors,
     stats: {
@@ -286,6 +319,7 @@ export function loadContentBundle(): ContentBundle {
       drops: drops.length,
       factions: factions.size(),
       regions: regions.size(),
+      enemies: enemies.size(),
     },
   };
 }
