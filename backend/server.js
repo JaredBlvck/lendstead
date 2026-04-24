@@ -715,7 +715,7 @@ async function runCycleAdvance() {
           {
             leader: b.leader,
             unlocks: b.unlocks,
-            description: `${b.leader.toUpperCase()} awakens — ${b.unlocks} unlocked`,
+            description: `${b.leader.toUpperCase()} awakens - ${b.unlocks} unlocked`,
             threshold: {
               pop: stateForUnlocks.population,
               zones_claimed: stateForUnlocks.zones_claimed,
