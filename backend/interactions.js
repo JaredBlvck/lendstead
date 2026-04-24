@@ -6,6 +6,8 @@
 
 export const ADJACENCY_DISTANCE = 1; // Chebyshev, includes diagonals
 export const MAX_INTERACTIONS_PER_CYCLE = 8;
+export const SKILL_CAP = 10;
+export const QUEST_GIVER_SKILL_THRESHOLD = 5;
 
 // Probability tables. Rolls are independent per candidate pair; the first
 // matching rule wins for a given pair (priority order below).
@@ -160,6 +162,11 @@ function classifyPair(a, b, rand) {
     : null;
   if (teacher && learner && teacher.lane === learner.lane) {
     if (rand() < PROB.teach) {
+      const priorSkill = Number(learner.skill || 0);
+      const teacherSkill = Number(teacher.skill || 0);
+      // Skill grows when the teacher's skill exceeds the learner's (can't teach
+      // what you don't know) and the learner isn't already capped.
+      const willLift = teacherSkill > priorSkill && priorSkill < SKILL_CAP;
       return {
         type: "teach",
         participants: pairOf(teacher, learner),
@@ -167,9 +174,13 @@ function classifyPair(a, b, rand) {
           teacher_id: teacher.id,
           teacher_name: teacher.name,
           teacher_role: teacher.role,
+          teacher_skill: teacherSkill,
           learner_id: learner.id,
           learner_name: learner.name,
           learner_role: learner.role,
+          skill_from: priorSkill,
+          skill_to: willLift ? priorSkill + 1 : priorSkill,
+          skill_lifted: willLift,
           morale_boost: true,
         },
       };
@@ -245,9 +256,10 @@ export function computeInteractions({ npcs, rand = Math.random }) {
   return out;
 }
 
-// Translate an outcome into NPC field updates. Returns a map
-// { [npc_id]: { morale?, condition?, last_condition_change? } }. Pure — caller
-// owns UPDATE statements. Respects morale ladder (low→med→high, capped).
+// Translate outcomes into NPC field updates. Returns a map
+// { [npc_id]: { morale?, condition?, last_condition_change?, skill? } }. Pure —
+// caller owns UPDATE statements. Respects morale ladder (low→med→high, capped)
+// and skill cap (SKILL_CAP).
 export function applyInteractionEffects(interactions, nextCycle) {
   const moraleUp = (m) => (m === "low" ? "med" : m === "med" ? "high" : "high");
   const updates = {};
@@ -258,6 +270,13 @@ export function applyInteractionEffects(interactions, nextCycle) {
         ...(updates[pid] || {}),
         condition: it.outcome.condition_to,
         last_condition_change: nextCycle,
+      };
+    }
+    if (it.type === "teach" && it.outcome?.skill_lifted) {
+      const lid = it.outcome.learner_id;
+      updates[lid] = {
+        ...(updates[lid] || {}),
+        skill: Math.min(SKILL_CAP, it.outcome.skill_to),
       };
     }
     if (it.outcome?.morale_boost) {
@@ -276,4 +295,31 @@ export function applyInteractionEffects(interactions, nextCycle) {
     delete updates[id].morale_seed;
   }
   return updates;
+}
+
+// Detect skill-threshold crossings — when a learner's skill lifts across a
+// narrative boundary (e.g., the quest-giver threshold). Returns events to
+// emit, one per crossing. Pure.
+export function detectSkillCrossings(interactions) {
+  const out = [];
+  for (const it of interactions) {
+    if (it.type !== "teach" || !it.outcome?.skill_lifted) continue;
+    const { skill_from, skill_to, learner_id, learner_name, learner_role } =
+      it.outcome;
+    if (
+      skill_from < QUEST_GIVER_SKILL_THRESHOLD &&
+      skill_to >= QUEST_GIVER_SKILL_THRESHOLD
+    ) {
+      out.push({
+        kind: "skill_threshold_crossed",
+        threshold: "quest_giver",
+        npc_id: learner_id,
+        npc_name: learner_name,
+        npc_role: learner_role,
+        skill_from,
+        skill_to,
+      });
+    }
+  }
+  return out;
 }

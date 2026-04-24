@@ -38,6 +38,7 @@ import {
 import {
   computeInteractions,
   applyInteractionEffects,
+  detectSkillCrossings,
 } from "./interactions.js";
 
 const app = express();
@@ -356,6 +357,10 @@ async function runCycleAdvance() {
         vals.push(fx.last_condition_change);
         cols.push(`last_condition_change = $${vals.length}`);
       }
+      if (fx.skill != null) {
+        vals.push(fx.skill);
+        cols.push(`skill = $${vals.length}`);
+      }
       if (!cols.length) continue;
       vals.push(id);
       await client.query(
@@ -375,6 +380,24 @@ async function runCycleAdvance() {
             participants: it.participants,
             outcome: it.outcome,
           },
+        ],
+      );
+    }
+    // Skill-threshold crossings: emit a narrative beat when a learner's skill
+    // crosses the quest-giver line (or any future threshold). Frontend can
+    // show "Tavin reaches skill 5 — now gives quests."
+    const skillCrossings = detectSkillCrossings(interactions);
+    for (const cr of skillCrossings) {
+      await client.query(
+        `INSERT INTO events (cycle, kind, payload) VALUES ($1, 'skill_threshold_crossed', $2)`,
+        [nextCycle, cr],
+      );
+      await client.query(
+        `INSERT INTO logs (cycle, leader, action, reasoning) VALUES ($1, 'auto', $2, $3)`,
+        [
+          nextCycle,
+          `${cr.npc_name} reaches skill ${cr.skill_to} — ${cr.threshold}`,
+          `learner lifted through teach event (${cr.skill_from} -> ${cr.skill_to})`,
         ],
       );
     }
