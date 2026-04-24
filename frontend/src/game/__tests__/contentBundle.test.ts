@@ -42,11 +42,24 @@ describe('loadContentBundle auto-discovery', () => {
     expect(ids).toContain('drop_the_deepening_foraging');
   });
 
-  it('boot errors array exists (may contain item cross-ref warnings, that is expected)', () => {
+  it('boot errors array exists (may contain cross-ref warnings, that is expected)', () => {
     expect(Array.isArray(bundle.errors)).toBe(true);
     // Any shape-level errors would be a real failure; cross-ref warnings are
-    // expected because authored drops may reference items not yet shipped.
-    const shapeErrors = bundle.errors.filter((e) => !e.includes('loaded with warnings'));
+    // expected because authored drops / quests may reference items, regions,
+    // or factions not yet shipped.
+    const shapeErrors = bundle.errors.filter(
+      (e) => !e.includes('loaded with warnings') && !e.includes('(warning)'),
+    );
     expect(shapeErrors).toEqual([]);
+  });
+
+  it('picks up registered regions and factions', () => {
+    expect(bundle.stats.regions).toBeGreaterThan(0);
+    expect(bundle.stats.factions).toBeGreaterThan(0);
+    expect(bundle.regions.has('region_founding_shore')).toBe(true);
+    expect(bundle.regions.has('region_the_deepening')).toBe(true);
+    expect(bundle.factions.has('faction_architects')).toBe(true);
+    expect(bundle.factions.has('faction_council_of_the_source')).toBe(true);
+    expect(bundle.factions.has('faction_opportunists')).toBe(true);
   });
 });

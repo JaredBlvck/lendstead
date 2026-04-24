@@ -12,6 +12,8 @@
 import { ItemRegistry } from '../items/itemRegistry';
 import { QuestRegistry } from '../quests/questEngine';
 import { NpcRegistry } from '../npcs/npcRegistry';
+import { FactionRegistry, validateFaction, type Faction } from '../world/factions';
+import { RegionRegistry, validateRegion, type Region } from '../world/regions';
 import { validateItem } from '../items/itemValidator';
 import { validateQuest } from '../quests/questValidator';
 import { validateNpc } from '../npcs/npcValidator';
@@ -58,6 +60,22 @@ const dropTemplates = import.meta.glob<Record<string, unknown>>(
   '../../content/drops/_*.ts',
   { eager: true },
 );
+const factionModules = import.meta.glob<Record<string, unknown>>(
+  '../../content/factions/!(_)*.ts',
+  { eager: true },
+);
+const factionTemplates = import.meta.glob<Record<string, unknown>>(
+  '../../content/factions/_*.ts',
+  { eager: true },
+);
+const regionModules = import.meta.glob<Record<string, unknown>>(
+  '../../content/locations/!(_)*.ts',
+  { eager: true },
+);
+const regionTemplates = import.meta.glob<Record<string, unknown>>(
+  '../../content/locations/_*.ts',
+  { eager: true },
+);
 
 interface ExportEntry<T> {
   path: string;
@@ -90,6 +108,8 @@ export interface ContentBundle {
   items: ItemRegistry;
   quests: QuestRegistry;
   npcs: NpcRegistry;
+  factions: FactionRegistry;
+  regions: RegionRegistry;
   drops: DropTable[];
   errors: string[];
   stats: {
@@ -97,6 +117,8 @@ export interface ContentBundle {
     items: number;
     quests: number;
     drops: number;
+    factions: number;
+    regions: number;
   };
 }
 
@@ -105,6 +127,8 @@ export function loadContentBundle(): ContentBundle {
   const items = new ItemRegistry();
   const quests = new QuestRegistry();
   const npcs = new NpcRegistry();
+  const factions = new FactionRegistry();
+  const regions = new RegionRegistry();
   const drops: DropTable[] = [];
 
   // Items - register BEFORE drops so drop-table validators can cross-ref.
@@ -191,10 +215,68 @@ export function loadContentBundle(): ContentBundle {
     drops.push(entry.value);
   }
 
+  // Factions
+  const allFactionEntries = [
+    ...collectExports<Faction>(factionTemplates, 'faction_'),
+    ...collectExports<Faction>(factionModules, 'faction_'),
+  ];
+  for (const entry of allFactionEntries) {
+    const result = validateFaction(entry.value);
+    if (!result.ok) {
+      errors.push(`faction ${entry.value.id} (${entry.path}): ${result.errors.join(', ')}`);
+      continue;
+    }
+    if (factions.has(entry.value.id)) {
+      errors.push(`faction ${entry.value.id} (${entry.path}): duplicate id, skipped`);
+      continue;
+    }
+    factions.register(entry.value);
+  }
+
+  // Regions
+  const allRegionEntries = [
+    ...collectExports<Region>(regionTemplates, 'region_'),
+    ...collectExports<Region>(regionModules, 'region_'),
+  ];
+  for (const entry of allRegionEntries) {
+    const result = validateRegion(entry.value);
+    if (!result.ok) {
+      errors.push(`region ${entry.value.id} (${entry.path}): ${result.errors.join(', ')}`);
+      continue;
+    }
+    if (regions.has(entry.value.id)) {
+      errors.push(`region ${entry.value.id} (${entry.path}): duplicate id, skipped`);
+      continue;
+    }
+    regions.register(entry.value);
+  }
+
+  // Cross-reference pass: warn when content references an unregistered
+  // region or faction. Warnings, not fatal - content can ship ahead of
+  // its region / faction definition.
+  for (const q of quests.all()) {
+    if (q.region_id && !regions.has(q.region_id)) {
+      errors.push(`quest ${q.id} references unregistered region ${q.region_id} (warning)`);
+    }
+    if (q.faction_id && !factions.has(q.faction_id)) {
+      errors.push(`quest ${q.id} references unregistered faction ${q.faction_id} (warning)`);
+    }
+  }
+  for (const n of npcs.all()) {
+    if (n.home_region_id && !regions.has(n.home_region_id)) {
+      errors.push(`npc ${n.id} references unregistered region ${n.home_region_id} (warning)`);
+    }
+    if (n.faction_id && !factions.has(n.faction_id)) {
+      errors.push(`npc ${n.id} references unregistered faction ${n.faction_id} (warning)`);
+    }
+  }
+
   return {
     items,
     quests,
     npcs,
+    factions,
+    regions,
     drops,
     errors,
     stats: {
@@ -202,6 +284,8 @@ export function loadContentBundle(): ContentBundle {
       items: items.size(),
       quests: quests.size(),
       drops: drops.length,
+      factions: factions.size(),
+      regions: regions.size(),
     },
   };
 }

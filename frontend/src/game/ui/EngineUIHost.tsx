@@ -11,6 +11,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { QuestLog } from './QuestLog';
 import { InventoryHUD } from './InventoryHUD';
 import { DialogueModal } from './DialogueModal';
+import { CraftingPanel } from './CraftingPanel';
 
 declare global {
   interface Window {
@@ -38,6 +39,7 @@ const styles: Record<string, CSSProperties> = {
 export function EngineUIHost() {
   const [questLogOpen, setQuestLogOpen] = useState(true);
   const [inventoryOpen, setInventoryOpen] = useState(true);
+  const [craftingOpen, setCraftingOpen] = useState(false);
   const [dialogueNpc, setDialogueNpc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,6 +55,7 @@ export function EngineUIHost() {
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'q' || e.key === 'Q') setQuestLogOpen((v) => !v);
       if (e.key === 'i' || e.key === 'I') setInventoryOpen((v) => !v);
+      if (e.key === 'c' || e.key === 'C') setCraftingOpen((v) => !v);
       if (e.key === 'Escape') setDialogueNpc(null);
     };
     window.addEventListener('keydown', onKey);
@@ -67,7 +70,8 @@ export function EngineUIHost() {
         </button>
       )}
       <QuestLog open={questLogOpen} onToggle={() => setQuestLogOpen(false)} />
-      {inventoryOpen && <InventoryHUD />}
+      {inventoryOpen && !craftingOpen && <InventoryHUD />}
+      {craftingOpen && <CraftingPanel onClose={() => setCraftingOpen(false)} />}
       <DialogueModal npcId={dialogueNpc} onClose={() => setDialogueNpc(null)} />
     </>
   );
