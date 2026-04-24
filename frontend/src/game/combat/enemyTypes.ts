@@ -95,4 +95,6 @@ export interface EncounterState {
   log: string[];
   outcome: 'in_progress' | 'victory' | 'defeat' | 'fled';
   rewards?: Array<{ item_id: string; qty: number }>;
+  // Cooldown tracker per enemy ability id. Absent or 0 = ready.
+  enemy_ability_cooldowns?: Record<string, number>;
 }
