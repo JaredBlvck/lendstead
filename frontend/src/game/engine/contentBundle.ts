@@ -16,6 +16,9 @@ import { FactionRegistry, validateFaction, type Faction } from '../world/faction
 import { RegionRegistry, validateRegion, type Region } from '../world/regions';
 import { EnemyRegistry } from '../combat/enemyRegistry';
 import { validateEnemy } from '../combat/enemyValidator';
+import { DiscoveryRegistry } from '../archaeology/discoveryRuntime';
+import { validateDiscoverySite } from '../archaeology/carvingValidator';
+import type { DiscoverySite } from '../archaeology/carvingTypes';
 import { validateItem } from '../items/itemValidator';
 import { validateQuest } from '../quests/questValidator';
 import { validateNpc } from '../npcs/npcValidator';
@@ -122,6 +125,7 @@ export interface ContentBundle {
   factions: FactionRegistry;
   regions: RegionRegistry;
   enemies: EnemyRegistry;
+  discoveries: DiscoveryRegistry;
   drops: DropTable[];
   errors: string[];
   stats: {
@@ -132,6 +136,7 @@ export interface ContentBundle {
     factions: number;
     regions: number;
     enemies: number;
+    discoveries: number;
   };
 }
 
@@ -143,6 +148,7 @@ export function loadContentBundle(): ContentBundle {
   const factions = new FactionRegistry();
   const regions = new RegionRegistry();
   const enemies = new EnemyRegistry();
+  const discoveries = new DiscoveryRegistry();
   const drops: DropTable[] = [];
 
   // Items - register BEFORE drops so drop-table validators can cross-ref.
@@ -283,6 +289,25 @@ export function loadContentBundle(): ContentBundle {
     enemies.register(entry.value);
   }
 
+  // Discovery sites live in the same /content/locations/ dir as regions;
+  // id-prefix routing distinguishes them (region_ vs site_).
+  const allDiscoveryEntries = [
+    ...collectExports<DiscoverySite>(regionTemplates, 'site_'),
+    ...collectExports<DiscoverySite>(regionModules, 'site_'),
+  ];
+  for (const entry of allDiscoveryEntries) {
+    const result = validateDiscoverySite(entry.value);
+    if (!result.ok) {
+      errors.push(`site ${entry.value.id} (${entry.path}): ${result.errors.join(', ')}`);
+      continue;
+    }
+    if (discoveries.has(entry.value.id)) {
+      errors.push(`site ${entry.value.id} (${entry.path}): duplicate id, skipped`);
+      continue;
+    }
+    discoveries.register(entry.value);
+  }
+
   // Cross-reference pass: warn when content references an unregistered
   // region or faction. Warnings, not fatal - content can ship ahead of
   // its region / faction definition.
@@ -310,6 +335,7 @@ export function loadContentBundle(): ContentBundle {
     factions,
     regions,
     enemies,
+    discoveries,
     drops,
     errors,
     stats: {
@@ -320,6 +346,7 @@ export function loadContentBundle(): ContentBundle {
       factions: factions.size(),
       regions: regions.size(),
       enemies: enemies.size(),
+      discoveries: discoveries.size(),
     },
   };
 }
