@@ -60,6 +60,9 @@ Things that trip up first-time authors (each cost ~30 seconds to resolve but eas
 4. **Quest objective ids need the `obj_` prefix; choice ids need `choice_`; IDs generally need their domain prefix** (`npc_`, `item_`, `quest_`, `drop_`, `region_`, `faction_`).
 5. **`schema_version: 1` is required literal.** Don't omit; don't use a string.
 6. **Drop table `guaranteed_drops[]` is strict shape** `{item_id, min_qty, max_qty, weight}`. `common_drops[]` uses the same shape; `uncommon_drops[]` same; `rare_drops[]` same. `ultra_rare_drops[]` uses a different shape `{item_id, chance, min_qty, max_qty}` — `chance` (0–1) instead of `weight`. Watch the swap.
+7. **Drop table `guaranteed_drops[]` entries require `min_qty >= 1` AND `max_qty >= 1`.** You cannot use a `{min_qty: 0, max_qty: 0, weight: 0}` placeholder to mean "no guaranteed drop." Use an empty array `guaranteed_drops: []` instead.
+8. **Item `rarity` enum is narrative, NOT D&D-standard.** Valid: `common | uncommon | rare | ancient | mythic | cursed | founder_relic`. NOT valid: `epic`, `legendary` (those are from earlier Bible design-rule text and are wrong). Map your intent: `ancient` = archaeology / pre-Source find. `mythic` = Source-tied relic (e.g., ruler-cast artifact). `cursed` = bad-omen artifact. `founder_relic` = pre-civilization founder-era item. Bible §8.6 will be patched to reflect.
+9. **NPC `default_movement_mode` enum is full-name, NOT bare verbs.** Valid: `idle | wander | patrol | travel_to_job | travel_home | quest_target | flee | follow_player | blocked`. NOT valid: bare `travel` (use `travel_to_job` or `travel_home`), `roaming` (use `wander`), `guarding` (use `patrol`).
 
 ## Naming conventions
 
@@ -80,7 +83,7 @@ From Content Bible §8 — Sr's validators enforce structural versions of these;
 3. Quest rewards are **material | social | structural | skill**. No generic XP bars.
 4. **Lore consistency with the Source.** Don't author deities/pantheons that contradict Bible §2.
 5. **Role distribution** targets across batches: scout ~25%, forager ~20%, crafter ~15%, healer ~10%, scholar/organizer ~15%, prospector/miner ~10%, other ~5%.
-6. **Item rarity tiers**: common / uncommon / rare / epic / legendary. Rare+ must tie to a Source event or monument location.
+6. **Item rarity tiers** (engine-enforced): common / uncommon / rare / ancient / mythic / cursed / founder_relic. Rare+ must tie to a Source event or monument location. Earlier Bible design-rule text cited D&D tiers (epic/legendary); those are invalid per the schema — see Known gotcha #8.
 7. **All NPCs are named** — no "Guard #1".
 8. **Factions grow from the Source** — any new faction declares Source-relation (custodian, user, denier, outcast, exile).
 9. **Role-voiced dialogue** — healer = tender + weary; scout = clipped + observational; scholar = referential + cautious. See each NPC file for the patterns.
