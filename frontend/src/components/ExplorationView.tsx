@@ -23,10 +23,34 @@ import {
   type AbilityVFX,
   type BreakthroughEvent,
 } from '../lib/abilities';
+import {
+  buildInteractionVFX,
+  buildSkillThresholdVFX,
+  type InteractionVFX,
+  type SkillThresholdVFX,
+} from '../lib/interactions';
+import { NPCInteractionLayer } from './NPCInteractionLayer';
+import { SkillThresholdBanner } from './SkillThresholdBanner';
+import {
+  buildAffinityMilestoneVFX,
+  type AffinityMilestoneVFX,
+} from '../lib/affinity';
+import { AffinityMilestoneBanner } from './AffinityMilestoneBanner';
+import { BondedPairsLayer } from './BondedPairsLayer';
+import { useAffinity } from '../hooks/useWorld';
 import { RulerAvatar } from './RulerAvatar';
 import { AbilityVFXLayer } from './AbilityVFXLayer';
 import { BreakthroughBanner } from './BreakthroughBanner';
 import { EnergyHUD } from './EnergyHUD';
+import { aggregateMagicTraces } from '../lib/magicTraces';
+import { AbilityTracesLayer } from './AbilityTracesLayer';
+import { bubbleFor } from '../lib/chatBubbles';
+import { ProgressionPanel } from './ProgressionPanel';
+import { VerbMenu } from './VerbMenu';
+import { useLogs } from '../hooks/useWorld';
+import { TreasuryPanel } from './TreasuryPanel';
+import { questFor, hasQuest, isQuestComplete } from '../lib/quests';
+import { useQuests, useQuestTransition } from '../hooks/useWorld';
 
 // Input state shared by keyboard + joystick + click-to-walk. FPSController
 // reads this instead of a key map directly, so touch and mouse+keyboard
@@ -112,10 +136,15 @@ interface NPCMarkerProps {
   tileHeight: number;
   onHover: (npc: NPC | null) => void;
   onClick: (npc: NPC) => void;
+  onContextMenu?: (npc: NPC, screenX: number, screenY: number) => void;
   isSelected: boolean;
+  bubbleText?: string;
+  bubbleFadeMs?: number;
+  showQuest?: boolean;
+  questAccepted?: boolean;
 }
 
-function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerProps) {
+function NPCMarker({ npc, tileHeight, onHover, onClick, onContextMenu, isSelected, bubbleText, bubbleFadeMs, showQuest, questAccepted }: NPCMarkerProps) {
   const groupRef = useRef<THREE.Group>(null);
   const headRef = useRef<THREE.Mesh>(null);
   const leftLegRef = useRef<THREE.Group>(null);
@@ -191,7 +220,33 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
         e.stopPropagation();
         onClick(npc);
       }}
+      onContextMenu={(e) => {
+        if (!onContextMenu) return;
+        e.nativeEvent.preventDefault?.();
+        const evt = (e as unknown as { nativeEvent: MouseEvent }).nativeEvent;
+        onContextMenu(npc, evt.clientX, evt.clientY);
+      }}
     >
+      {/* Floating chat bubble above head */}
+      {bubbleText && (
+        <Html
+          position={[0, Math.max(0.4, tileHeight) + 2.3, 0]}
+          center
+          distanceFactor={14}
+          style={{ pointerEvents: 'none' }}
+        >
+          <div
+            className="npc-chat-bubble"
+            style={{ opacity: bubbleFadeMs != null ? Math.max(0, 1 - bubbleFadeMs / 4500) : 1 }}
+          >
+            {bubbleText}
+          </div>
+        </Html>
+      )}
+      {/* Quest indicator - pulsing yellow "?" or green "!" above head */}
+      {showQuest && (
+        <QuestIndicator baseY={Math.max(0.4, tileHeight) + 2.0} accepted={questAccepted ?? false} />
+      )}
       {/* Selection ring under the feet */}
       {isSelected && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, base + 0.06, 0]}>
@@ -219,11 +274,8 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
         <meshStandardMaterial color={skinColor} roughness={0.55} />
       </mesh>
 
-      {/* Hair/helmet-cap on top of head */}
-      <mesh position={[0, base + 1.6, 0]} castShadow>
-        <boxGeometry args={[0.36, 0.12, 0.34]} />
-        <meshStandardMaterial color={hairColor} roughness={0.65} />
-      </mesh>
+      {/* Role+skill tiered headwear */}
+      <Headwear role={npc.role} skill={npc.skill} hairColor={hairColor} baseY={base + 1.6} laneColor={color} />
 
       {/* Eyes - tiny dark squares */}
       <mesh position={[-0.08, base + 1.44, 0.17]}>
@@ -293,8 +345,163 @@ function NPCMarker({ npc, tileHeight, onHover, onClick, isSelected }: NPCMarkerP
           emissiveIntensity={0.4}
         />
       </mesh>
+
+      {/* Role-specific prop - gives each archetype a readable silhouette */}
+      <RoleProp role={npc.role} base={base} />
     </group>
   );
+}
+
+// Floating quest mark over NPC head - "?" for unaccepted, "!" for accepted
+function QuestIndicator({ baseY, accepted }: { baseY: number; accepted: boolean }) {
+  const ref = useRef<THREE.Mesh>(null);
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    ref.current.position.y = baseY + Math.sin(clock.elapsedTime * 2.5) * 0.12;
+    ref.current.rotation.y = clock.elapsedTime * 1.5;
+    const mat = ref.current.material as THREE.MeshStandardMaterial;
+    mat.emissiveIntensity = 2.5 + Math.sin(clock.elapsedTime * 4) * 0.8;
+  });
+  const color = accepted ? '#22c55e' : '#fde047';
+  return (
+    <>
+      <mesh ref={ref} position={[0, baseY, 0]}>
+        <torusGeometry args={[0.13, 0.05, 8, 14]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={3}
+        />
+      </mesh>
+      <mesh position={[0, baseY - 0.08, 0]}>
+        <sphereGeometry args={[0.055, 8, 8]} />
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={3}
+        />
+      </mesh>
+    </>
+  );
+}
+
+function Headwear({ role, skill, hairColor, baseY, laneColor }: {
+  role: string;
+  skill: number;
+  hairColor: string;
+  baseY: number;
+  laneColor: string;
+}) {
+  const ornate = skill >= 6;
+  if (/scout|watcher|ranger|sentry|mapper|explorer/i.test(role)) {
+    return (
+      <>
+        <mesh position={[0, baseY, -0.05]} castShadow>
+          <boxGeometry args={[0.4, 0.14, 0.4]} />
+          <meshStandardMaterial color={ornate ? '#4a2e1a' : hairColor} roughness={0.85} />
+        </mesh>
+        {ornate && (
+          <mesh position={[0, baseY + 0.1, 0]}>
+            <coneGeometry args={[0.04, 0.12, 4]} />
+            <meshStandardMaterial color={laneColor} emissive={laneColor} emissiveIntensity={1.5} />
+          </mesh>
+        )}
+      </>
+    );
+  }
+  if (/carpenter|toolmaker|potter|organizer|inland|marker|prospector|hauler|healer/i.test(role)) {
+    return ornate ? (
+      <mesh position={[0, baseY, 0]} castShadow>
+        <boxGeometry args={[0.38, 0.18, 0.36]} />
+        <meshStandardMaterial color="#6b7280" roughness={0.4} metalness={0.6} />
+      </mesh>
+    ) : (
+      <mesh position={[0, baseY - 0.02, 0.08]} castShadow>
+        <boxGeometry args={[0.38, 0.1, 0.2]} />
+        <meshStandardMaterial color={hairColor} roughness={0.65} />
+      </mesh>
+    );
+  }
+  if (/forager|fisher|gatherer|shore|tide|trader/i.test(role)) {
+    return (
+      <>
+        <mesh position={[0, baseY, 0]} castShadow>
+          <cylinderGeometry args={[0.26, 0.26, 0.03, 12]} />
+          <meshStandardMaterial color="#c4a260" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, baseY + 0.06, 0]} castShadow>
+          <cylinderGeometry args={[0.14, 0.16, 0.1, 10]} />
+          <meshStandardMaterial color="#c4a260" roughness={0.9} />
+        </mesh>
+      </>
+    );
+  }
+  if (ornate) {
+    return (
+      <mesh position={[0, baseY - 0.04, 0]}>
+        <torusGeometry args={[0.2, 0.025, 6, 12]} />
+        <meshStandardMaterial color={laneColor} emissive={laneColor} emissiveIntensity={1.2} />
+      </mesh>
+    );
+  }
+  return (
+    <mesh position={[0, baseY, 0]} castShadow>
+      <boxGeometry args={[0.36, 0.12, 0.34]} />
+      <meshStandardMaterial color={hairColor} roughness={0.65} />
+    </mesh>
+  );
+}
+
+function RoleProp({ role, base }: { role: string; base: number }) {
+  // Scouts carry a spear strapped to the back
+  if (/scout|watcher|ranger|sentry|mapper|explorer/i.test(role)) {
+    return (
+      <group position={[0.12, base + 1.2, -0.2]} rotation={[0.3, 0, -0.15]}>
+        <mesh castShadow>
+          <cylinderGeometry args={[0.025, 0.025, 1.0, 6]} />
+          <meshStandardMaterial color="#3a2a1a" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 0.55, 0]} castShadow>
+          <coneGeometry args={[0.06, 0.18, 4]} />
+          <meshStandardMaterial color="#c0c6d2" roughness={0.35} metalness={0.7} />
+        </mesh>
+      </group>
+    );
+  }
+  // Builders carry a hammer in right hand
+  if (/carpenter|toolmaker|potter|organizer|inland|marker|prospector|hauler|healer/i.test(role)) {
+    return (
+      <group position={[0.42, base + 0.7, 0.06]} rotation={[0, 0, -0.2]}>
+        <mesh castShadow>
+          <cylinderGeometry args={[0.025, 0.025, 0.35, 6]} />
+          <meshStandardMaterial color="#3a2a1a" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 0.2, 0]} castShadow>
+          <boxGeometry args={[0.12, 0.08, 0.08]} />
+          <meshStandardMaterial color="#555a63" roughness={0.5} metalness={0.5} />
+        </mesh>
+      </group>
+    );
+  }
+  // Runners carry a small pack on their back
+  if (/runner|courier/i.test(role)) {
+    return (
+      <mesh position={[0, base + 1.0, -0.18]} castShadow>
+        <boxGeometry args={[0.32, 0.3, 0.14]} />
+        <meshStandardMaterial color="#6b4a2a" roughness={0.9} />
+      </mesh>
+    );
+  }
+  // Foragers/fishers carry a basket at hip
+  if (/forager|fisher|gatherer|shore|tide|trader/i.test(role)) {
+    return (
+      <mesh position={[0.38, base + 0.8, 0.05]} castShadow>
+        <cylinderGeometry args={[0.15, 0.13, 0.22, 8]} />
+        <meshStandardMaterial color="#a16207" roughness={0.9} />
+      </mesh>
+    );
+  }
+  return null;
 }
 
 // ---------- STRUCTURES (Phase 4) ----------
@@ -330,7 +537,15 @@ function layoutStructures(infra: Record<string, unknown>): StructurePlacement[] 
   return out;
 }
 
-function Structure({ placement, heightMap }: { placement: StructurePlacement; heightMap: Map<string, number> }) {
+function Structure({
+  placement,
+  heightMap,
+  onClick,
+}: {
+  placement: StructurePlacement;
+  heightMap: Map<string, number>;
+  onClick?: (p: StructurePlacement) => void;
+}) {
   const { key, x, y } = placement;
   const tileKey = `${Math.round(x)},${Math.round(y)}`;
   const baseY = heightMap.get(tileKey) ?? 0.5;
@@ -345,9 +560,23 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
     }
   });
 
+  const groupProps = onClick
+    ? {
+        onPointerOver: (e: { stopPropagation: () => void }) => {
+          e.stopPropagation();
+          document.body.style.cursor = 'pointer';
+        },
+        onPointerOut: () => { document.body.style.cursor = ''; },
+        onPointerDown: (e: { stopPropagation: () => void }) => {
+          e.stopPropagation();
+          onClick(placement);
+        },
+      }
+    : {};
+
   if (/palisade/.test(key)) {
     return (
-      <group position={[wx, baseY, wz]}>
+      <group position={[wx, baseY, wz]} {...groupProps}>
         {[-1.5, -0.5, 0.5, 1.5].map((offset, i) => (
           <mesh key={i} position={[offset, 0.6, 0]} castShadow receiveShadow>
             <coneGeometry args={[0.15, 1.2, 6]} />
@@ -359,7 +588,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
   }
   if (/smithy|forge/.test(key)) {
     return (
-      <group position={[wx, baseY, wz]}>
+      <group position={[wx, baseY, wz]} {...groupProps}>
         <mesh position={[0, 0.6, 0]} castShadow>
           <boxGeometry args={[1.2, 1.2, 1.2]} />
           <meshStandardMaterial color="#4a2e1a" roughness={0.8} />
@@ -387,7 +616,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
   }
   if (/cistern|well|spring/.test(key)) {
     return (
-      <group position={[wx, baseY, wz]}>
+      <group position={[wx, baseY, wz]} {...groupProps}>
         <mesh position={[0, 0.3, 0]} castShadow>
           <cylinderGeometry args={[0.5, 0.55, 0.6, 12]} />
           <meshStandardMaterial color="#6b6b72" roughness={0.9} />
@@ -406,7 +635,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
   }
   if (/watch|tower/.test(key)) {
     return (
-      <group position={[wx, baseY, wz]}>
+      <group position={[wx, baseY, wz]} {...groupProps}>
         <mesh position={[0, 1.0, 0]} castShadow>
           <cylinderGeometry args={[0.08, 0.08, 2.0, 6]} />
           <meshStandardMaterial color="#6b5a3a" roughness={0.9} />
@@ -427,7 +656,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
     // (needs world energy access). Skip here.
     if (/central/i.test(key)) return null;
     return (
-      <group position={[wx, baseY, wz]}>
+      <group position={[wx, baseY, wz]} {...groupProps}>
         <mesh position={[-0.35, 0.5, 0]} castShadow>
           <coneGeometry args={[0.5, 1.0, 4]} />
           <meshStandardMaterial color="#9a7a5a" roughness={0.85} />
@@ -449,7 +678,7 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
   }
   // Generic tent
   return (
-    <group position={[wx, baseY, wz]}>
+    <group position={[wx, baseY, wz]} {...groupProps}>
       <mesh position={[0, 0.5, 0]} castShadow>
         <coneGeometry args={[0.45, 1.0, 4]} />
         <meshStandardMaterial color="#9a7a5a" roughness={0.85} />
@@ -516,6 +745,92 @@ function WalkTargetPicker({ enabled, onSet }: { enabled: boolean; onSet?: () => 
 // particle systems. Each event gets a pulse animation driven off the
 // display event's age.
 
+// Storm effect: darkening dome + falling rain particles + internal
+// lightning flicker. Particles re-emit when they hit the ground so the
+// storm rains continuously without allocating new geometry per frame.
+function StormEffect({ x, z, baseHeight, radius }: { x: number; z: number; baseHeight: number; radius: number }) {
+  const pointsRef = useRef<THREE.Points>(null);
+  const lightningRef = useRef<THREE.Mesh>(null);
+
+  const rainGeom = useMemo(() => {
+    const N = 180;
+    const pos = new Float32Array(N * 3);
+    const r = radius * UNIT;
+    for (let i = 0; i < N; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.sqrt(Math.random()) * r;
+      pos[i * 3] = Math.cos(a) * d;
+      pos[i * 3 + 1] = Math.random() * 8 + 2;
+      pos[i * 3 + 2] = Math.sin(a) * d;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    return g;
+  }, [radius]);
+
+  useFrame(({ clock }, delta) => {
+    if (pointsRef.current) {
+      const pos = rainGeom.attributes.position.array as Float32Array;
+      const r = radius * UNIT;
+      for (let i = 0; i < pos.length / 3; i++) {
+        pos[i * 3 + 1] -= delta * 12;
+        if (pos[i * 3 + 1] < -0.5) {
+          pos[i * 3 + 1] = 8 + Math.random() * 2;
+          const a = Math.random() * Math.PI * 2;
+          const d = Math.sqrt(Math.random()) * r;
+          pos[i * 3] = Math.cos(a) * d;
+          pos[i * 3 + 2] = Math.sin(a) * d;
+        }
+      }
+      rainGeom.attributes.position.needsUpdate = true;
+    }
+    // Occasional lightning flash
+    if (lightningRef.current) {
+      const flash = Math.sin(clock.elapsedTime * 3.7) > 0.94 ? 1 : 0;
+      (lightningRef.current.material as THREE.MeshStandardMaterial).opacity = flash * 0.6;
+    }
+  });
+
+  return (
+    <group position={[x, baseHeight + 0.5, z]}>
+      {/* Dark dome */}
+      <mesh>
+        <sphereGeometry args={[radius * UNIT * 0.5, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
+        <meshStandardMaterial
+          color="#1a1f2a"
+          transparent
+          opacity={0.45}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+        />
+      </mesh>
+      {/* Rain particles */}
+      <points ref={pointsRef} geometry={rainGeom}>
+        <pointsMaterial
+          color="#b4c5d4"
+          size={0.08}
+          transparent
+          opacity={0.6}
+          depthWrite={false}
+          sizeAttenuation
+        />
+      </points>
+      {/* Lightning flash plane */}
+      <mesh ref={lightningRef} position={[0, radius * 0.3, 0]}>
+        <sphereGeometry args={[radius * UNIT * 0.5, 8, 4]} />
+        <meshStandardMaterial
+          color="#ffffff"
+          emissive="#e8f1ff"
+          emissiveIntensity={3}
+          transparent
+          opacity={0}
+          depthWrite={false}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function EventMarker({ evt, baseHeight }: { evt: DisplayEvent; baseHeight: number }) {
   const groupRef = useRef<THREE.Group>(null);
   const x = (evt.x - GRID_W / 2) * UNIT;
@@ -529,20 +844,7 @@ function EventMarker({ evt, baseHeight }: { evt: DisplayEvent; baseHeight: numbe
   });
 
   if (evt.kind === 'storm') {
-    return (
-      <group position={[x, baseHeight + 0.5, z]}>
-        <mesh>
-          <sphereGeometry args={[evt.radius * UNIT * 0.5, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
-          <meshStandardMaterial
-            color="#1a1f2a"
-            transparent
-            opacity={0.35}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-          />
-        </mesh>
-      </group>
-    );
+    return <StormEffect x={x} z={z} baseHeight={baseHeight} radius={evt.radius} />;
   }
 
   if (evt.kind === 'discovery') {
@@ -1152,7 +1454,50 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
   const [hoveredNPC, setHoveredNPC] = useState<NPC | null>(null);
   const [selectedNPC, setSelectedNPC] = useState<NPC | null>(null);
   const [soundOn, setSoundOn] = useState(false);
+  const [verbMenu, setVerbMenu] = useState<{ npc: NPC; x: number; y: number } | null>(null);
+  const [showProgression, setShowProgression] = useState(false);
+  const [showTreasury, setShowTreasury] = useState(false);
+  const [selectedStructure, setSelectedStructure] = useState<StructurePlacement | null>(null);
+  // Accepted + completed quests come from /api/quests now. Compute the
+  // same key-set shape my render uses (`q:<npcName>:<quest_key>`) from
+  // the backend rows.
+  const acceptedQuery = useQuests('accepted');
+  const completedQuery = useQuests('completed');
+  const questTransition = useQuestTransition();
+  const acceptedQuestIds = useMemo(() => {
+    const s = new Set<string>();
+    (acceptedQuery.data ?? []).forEach((q) => {
+      if (q.npc_name) s.add(`q:${q.npc_name}:${q.quest_key}`);
+    });
+    return s;
+  }, [acceptedQuery.data]);
+  const completedQuestIds = useMemo(() => {
+    const s = new Set<string>();
+    (completedQuery.data ?? []).forEach((q) => {
+      if (q.npc_name) s.add(`q:${q.npc_name}:${q.quest_key}`);
+    });
+    return s;
+  }, [completedQuery.data]);
+
+  const autoCheckedRef = useRef<Set<string>>(new Set());
+  const [chatTick, setChatTick] = useState(0);
+  const [chatFade, setChatFade] = useState(0);
   const isTouch = useMemo(() => isTouchDevice(), []);
+
+  const logsQuery = useLogs();
+
+  // Chat bubble refresh: every cycle (detected via world.cycle change) set
+  // a fresh chatTick so bubbles regenerate; fade out over 4.5s then go
+  // blank until next cycle.
+  useEffect(() => {
+    setChatTick(world.cycle);
+    setChatFade(0);
+    const start = performance.now();
+    const id = window.setInterval(() => {
+      setChatFade(performance.now() - start);
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [world.cycle]);
 
   // Third-person player entity (position, yaw, motion state)
   const playerRef = useRef<PlayerState>({
@@ -1213,12 +1558,111 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
   };
 
   const eventsQuery = useEvents();
+
+  // Auto-completion evaluator: when an accepted quest's condition is met
+  // in current world + event state, POST transition to 'completed'. Runs
+  // once per accepted-quest-update so we don't double-fire.
+  useEffect(() => {
+    const accepted = acceptedQuery.data ?? [];
+    if (accepted.length === 0) return;
+    const events = (eventsQuery.data ?? []).map((e) => ({
+      cycle: e.cycle,
+      kind: e.kind,
+      payload: e.payload ?? {},
+    }));
+    for (const row of accepted) {
+      const key = `${row.npc_id}:${row.quest_key}`;
+      if (autoCheckedRef.current.has(key)) continue;
+      const ctx = {
+        world: {
+          cycle: world.cycle,
+          infrastructure: (world.infrastructure as unknown as Record<string, unknown>) ?? {},
+          resources: (world.resources as unknown as Record<string, unknown>) ?? {},
+        },
+        acceptedCycle: row.accepted_cycle ?? null,
+        events,
+      };
+      if (isQuestComplete(row.quest_key, ctx)) {
+        autoCheckedRef.current.add(key);
+        questTransition.mutate({
+          npc_id: row.npc_id,
+          quest_key: row.quest_key,
+          to: 'completed',
+        });
+      }
+    }
+  }, [acceptedQuery.data, eventsQuery.data, world.cycle, world.infrastructure, world.resources, questTransition]);
   const firstSeenRef = useRef<Map<number, number>>(new Map());
   const abilityFirstSeenRef = useRef<Map<number, number>>(new Map());
   const breakFirstSeenRef = useRef<Map<number, number>>(new Map());
   const [displayEvents, setDisplayEvents] = useState<DisplayEvent[]>([]);
   const [abilityVFX, setAbilityVFX] = useState<AbilityVFX[]>([]);
   const [breakthroughs, setBreakthroughs] = useState<BreakthroughEvent[]>([]);
+  const [interactionVFX, setInteractionVFX] = useState<InteractionVFX[]>([]);
+  const [skillThresholds, setSkillThresholds] = useState<SkillThresholdVFX[]>([]);
+  const [affinityMilestones, setAffinityMilestones] = useState<AffinityMilestoneVFX[]>([]);
+  const [visibleBreakthrough, setVisibleBreakthrough] = useState<BreakthroughEvent | null>(null);
+  const interactionFirstSeenRef = useRef<Map<number, number>>(new Map());
+  const skillThresholdFirstSeenRef = useRef<Map<number, number>>(new Map());
+  const affinityMilestoneFirstSeenRef = useRef<Map<number, number>>(new Map());
+
+  // Affinity pairs for bonded-thread rendering + NPC card "closest bonds"
+  const affinityQuery = useAffinity({ limit: 60 });
+
+  // Cumulative magic traces from event history - updates whenever
+  // eventsQuery data changes. Rendered as permanent-ish world marks.
+  const magicTraces = useMemo(() => aggregateMagicTraces(eventsQuery.data ?? []), [eventsQuery.data]);
+
+  // Ability-cast audio cues: fire sfx the first time we see each ability
+  // event. Uses a ref set so we don't replay on every re-render.
+  const abilityAudioSeenRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const events = eventsQuery.data ?? [];
+    for (const e of events) {
+      if (e.kind !== 'ability') continue;
+      if (abilityAudioSeenRef.current.has(e.id)) continue;
+      abilityAudioSeenRef.current.add(e.id);
+      if (soundOn && audio.isEnabled()) {
+        const kind = (e.payload as { ability_name?: string })?.ability_name;
+        if (kind === 'terrain_shape' || kind === 'resource_amp' || kind === 'protection' || kind === 'npc_influence') {
+          audio.abilityCast(kind);
+        }
+      }
+    }
+  }, [eventsQuery.data, soundOn]);
+
+  // Staggered breakthrough banners: when a batch of new breakthroughs
+  // arrives, show each for 3.5s with 0.8s stagger so the Awakening reads
+  // as a sequence, not a single flash.
+  const breakthroughQueueRef = useRef<{ list: BreakthroughEvent[]; index: number; seen: Set<number> }>({
+    list: [], index: 0, seen: new Set(),
+  });
+  useEffect(() => {
+    for (const b of breakthroughs) {
+      if (breakthroughQueueRef.current.seen.has(b.eventId)) continue;
+      breakthroughQueueRef.current.list.push(b);
+      breakthroughQueueRef.current.seen.add(b.eventId);
+    }
+  }, [breakthroughs]);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      while (!cancelled) {
+        const q = breakthroughQueueRef.current;
+        if (q.index >= q.list.length) {
+          await new Promise((r) => setTimeout(r, 500));
+          continue;
+        }
+        const next = q.list[q.index++];
+        setVisibleBreakthrough(next);
+        await new Promise((r) => setTimeout(r, 3500));
+        setVisibleBreakthrough(null);
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const rebuild = () => {
@@ -1227,6 +1671,9 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
       setDisplayEvents(buildDisplayEvents(src, firstSeenRef.current, now));
       setAbilityVFX(buildAbilityVFX(src, abilityFirstSeenRef.current, now));
       setBreakthroughs(buildBreakthroughEvents(src, breakFirstSeenRef.current, now));
+      setInteractionVFX(buildInteractionVFX(src, interactionFirstSeenRef.current, now));
+      setSkillThresholds(buildSkillThresholdVFX(src, skillThresholdFirstSeenRef.current, now));
+      setAffinityMilestones(buildAffinityMilestoneVFX(src, affinityMilestoneFirstSeenRef.current, now));
     };
     rebuild();
     const id = window.setInterval(rebuild, 500);
@@ -1342,13 +1789,29 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         onTouchMove={onTouchMoveCanvas}
         onTouchEnd={onTouchEndCanvas}
       >
-        <Sky
-          sunPosition={[100, 60, 50]}
-          turbidity={7}
-          rayleigh={2}
-          mieCoefficient={0.005}
-          mieDirectionalG={0.8}
-        />
+        {/* Day/night cycle - Sky + lighting change based on cycle % 20.
+            Simple 2-state swap (day vs dusk) rather than continuous so
+            the shift reads visibly. */}
+        {(() => {
+          const nightPhase = (world.cycle % 20) >= 15;
+          return nightPhase ? (
+            <Sky
+              sunPosition={[-10, -5, -20]}
+              turbidity={10}
+              rayleigh={5}
+              mieCoefficient={0.01}
+              mieDirectionalG={0.85}
+            />
+          ) : (
+            <Sky
+              sunPosition={[100, 60, 50]}
+              turbidity={7}
+              rayleigh={2}
+              mieCoefficient={0.005}
+              mieDirectionalG={0.8}
+            />
+          );
+        })()}
         {/* Depth fog for atmospheric distance falloff */}
         <fog attach="fog" args={['#7a9eb0', 25, 140]} />
         <SceneLighting />
@@ -1356,7 +1819,12 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         <Terrain tiles={tiles} />
         <WalkTargetPicker enabled={mode === 'fps' || mode === 'tp'} onSet={() => audio.tap()} />
         {structures.map((s, i) => (
-          <Structure key={`${s.key}-${i}`} placement={s} heightMap={heightAt} />
+          <Structure
+            key={`${s.key}-${i}`}
+            placement={s}
+            heightMap={heightAt}
+            onClick={setSelectedStructure}
+          />
         ))}
 
         {/* Temple at central camp position with energy-driven reactivity */}
@@ -1375,6 +1843,16 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         {/* Ability VFX layer (Magic Awakening, v7.3+) */}
         <AbilityVFXLayer vfx={abilityVFX} npcs={aliveNPCs} heightAt={heightAt} />
 
+        {/* NPC-to-NPC interaction layer (v8.5) */}
+        <NPCInteractionLayer interactions={interactionVFX} npcs={aliveNPCs} heightAt={heightAt} />
+
+        {/* Bonded-pair persistent threads (v8.8) - only for score>=2.0 pairs */}
+        <BondedPairsLayer
+          pairs={(affinityQuery.data ?? []) as Array<Parameters<typeof BondedPairsLayer>[0]['pairs'][number]>}
+          npcs={aliveNPCs}
+          heightAt={heightAt}
+        />
+
         {/* Ruler avatars flanking the temple - Sr and Jr as visible deities.
             Aura intensity tied to their per-leader energy pool. Rendered
             whether or not energy data is present (defaults to 50). */}
@@ -1388,16 +1866,27 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           lane="jr"
           energy={world.jr_energy ?? 50}
         />
-        {aliveNPCs.map((npc) => (
-          <NPCMarker
-            key={npc.id}
-            npc={npc}
-            tileHeight={heightAt.get(`${npc.x},${npc.y}`) ?? 0.5}
-            onHover={setHoveredNPC}
-            onClick={setSelectedNPC}
-            isSelected={selectedNPC?.id === npc.id}
-          />
-        ))}
+        {aliveNPCs.map((npc) => {
+          const q = questFor(npc);
+          return (
+            <NPCMarker
+              key={npc.id}
+              npc={npc}
+              tileHeight={heightAt.get(`${npc.x},${npc.y}`) ?? 0.5}
+              onHover={setHoveredNPC}
+              onClick={setSelectedNPC}
+              onContextMenu={(n, x, y) => setVerbMenu({ npc: n, x, y })}
+              isSelected={selectedNPC?.id === npc.id}
+              bubbleText={bubbleFor(npc, chatTick)}
+              bubbleFadeMs={chatFade}
+              showQuest={hasQuest(npc) && !(q && completedQuestIds.has(q.id))}
+              questAccepted={q ? acceptedQuestIds.has(q.id) : false}
+            />
+          );
+        })}
+
+        {/* Cumulative magic traces - prefers backend world.magic_monuments when present */}
+        <AbilityTracesLayer traces={magicTraces} world={world} heightAt={heightAt} />
         {/* Hover label floating above hovered NPC */}
         {hoveredNPC && hoveredNPC.x != null && hoveredNPC.y != null && (
           <Html
@@ -1510,16 +1999,175 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             {generateFlavor(selectedNPC, world.civ_name)}
             <span className="npc-card-quote">"</span>
           </div>
+          {(() => {
+            // Show top 3 closest bonds for this NPC from affinity data
+            const id = selectedNPC.id;
+            const pairs = (affinityQuery.data ?? [])
+              .filter((p) => p.npc_a === id || p.npc_b === id)
+              .sort((a, b) => parseFloat(String(b.score)) - parseFloat(String(a.score)))
+              .slice(0, 3);
+            if (pairs.length === 0) return null;
+            return (
+              <div className="npc-card-bonds">
+                <div className="npc-card-bonds-label">CLOSEST BONDS</div>
+                {pairs.map((p) => {
+                  const otherName = p.npc_a === id ? p.b_name : p.a_name;
+                  const otherRole = p.npc_a === id ? p.b_role : p.a_role;
+                  // Tier from CURRENT score (respects decay) not historical
+                  // milestones_reached (one-shot, never drops).
+                  const s = parseFloat(String(p.score ?? 0));
+                  const top = s >= 2.0 ? 'bonded'
+                    : s >= 1.0 ? 'close'
+                    : s >= 0.5 ? 'friendly'
+                    : s >= 0.2 ? 'acquainted'
+                    : null;
+                  return (
+                    <div key={`${p.npc_a}-${p.npc_b}`} className="bond-row">
+                      <span className="bond-name">{otherName}</span>
+                      {otherRole && <span className="bond-role">{otherRole}</span>}
+                      {top && <span className={`bond-tier bond-${top}`}>{top}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+          {(() => {
+            const q = questFor(selectedNPC);
+            if (!q) return null;
+            const isAccepted = acceptedQuestIds.has(q.id);
+            const isCompleted = completedQuestIds.has(q.id);
+            const pending = questTransition.isPending;
+            const transition = (to: 'accepted' | 'completed' | 'declined') => {
+              questTransition.mutate({ npc_id: q.npcId, quest_key: q.quest_key, to });
+            };
+            return (
+              <div className={`npc-card-quest ${isCompleted ? 'quest-done' : ''}`}>
+                <div className="npc-card-quest-head">
+                  <span className="npc-card-quest-tag">
+                    {isCompleted ? '✓ COMPLETED' : isAccepted ? '✓ ACCEPTED' : 'QUEST'}
+                  </span>
+                  <span className="npc-card-quest-title">{q.title}</span>
+                </div>
+                <div className="npc-card-quest-brief">{q.brief}</div>
+                <div className="npc-card-quest-reward">Reward: <em>{q.reward}</em></div>
+                {isCompleted ? (
+                  <div className="npc-card-quest-completed-note">Already completed. Thank you for your service.</div>
+                ) : !isAccepted ? (
+                  <div className="npc-card-quest-actions">
+                    <button className="npc-card-quest-accept" disabled={pending} onClick={() => transition('accepted')}>
+                      Accept
+                    </button>
+                    <button className="npc-card-quest-decline" disabled={pending} onClick={() => transition('declined')}>
+                      Decline
+                    </button>
+                  </div>
+                ) : (
+                  <div className="npc-card-quest-actions">
+                    <button className="npc-card-quest-accept" disabled={pending} onClick={() => transition('completed')}>
+                      Mark Complete
+                    </button>
+                    <button className="npc-card-quest-decline" disabled={pending} onClick={() => transition('declined')}>
+                      Abandon
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
       {/* Minimap - top-down quick-glance grid */}
       <Minimap tiles={tiles} npcs={aliveNPCs} />
 
-      {/* Magic Awakening HUD + breakthrough banner */}
+      {/* Magic Awakening HUD + staggered breakthrough banner */}
       <EnergyHUD srEnergy={world.sr_energy} jrEnergy={world.jr_energy} />
-      {breakthroughs.length > 0 && (
-        <BreakthroughBanner breakthrough={breakthroughs[breakthroughs.length - 1]} />
+      {visibleBreakthrough && <BreakthroughBanner breakthrough={visibleBreakthrough} />}
+      {/* Skill threshold crossing banner - newest one shows at right-bottom area */}
+      {skillThresholds.length > 0 && (
+        <SkillThresholdBanner vfx={skillThresholds[skillThresholds.length - 1]} />
+      )}
+      {affinityMilestones.length > 0 && (
+        <AffinityMilestoneBanner vfx={affinityMilestones[affinityMilestones.length - 1]} />
+      )}
+
+      {/* Progression + Treasury toggles */}
+      <div className="panel-toggles">
+        <button
+          className="progression-toggle"
+          onClick={() => setShowProgression((v) => !v)}
+          title={showProgression ? 'Hide quests' : 'Show quests'}
+        >
+          {showProgression ? '✕' : '☰'} Quests
+        </button>
+        <button
+          className="treasury-toggle"
+          onClick={() => setShowTreasury((v) => !v)}
+          title={showTreasury ? 'Hide treasury' : 'Show treasury'}
+        >
+          {showTreasury ? '✕' : '⚖'} Treasury
+        </button>
+      </div>
+      {showProgression && <ProgressionPanel world={world} logs={logsQuery.data ?? []} />}
+      <TreasuryPanel world={world} npcs={npcs} open={showTreasury} onClose={() => setShowTreasury(false)} />
+
+      {/* Structure info card - appears when user clicks a building in 3D */}
+      {selectedStructure && (
+        <div className="structure-card">
+          <div className="structure-card-head">
+            <span className="structure-card-icon">⌂</span>
+            <div className="structure-card-title">{selectedStructure.label}</div>
+            <button
+              className="structure-card-close"
+              onClick={() => setSelectedStructure(null)}
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+          <div className="structure-card-row">
+            <span className="structure-card-k">Type</span>
+            <span className="structure-card-v">{selectedStructure.key.replace(/_/g, ' ')}</span>
+          </div>
+          <div className="structure-card-row">
+            <span className="structure-card-k">Location</span>
+            <span className="structure-card-v">
+              [{selectedStructure.x.toFixed(0)}, {selectedStructure.y.toFixed(0)}]
+            </span>
+          </div>
+          {(() => {
+            const v = (world.infrastructure as Record<string, unknown>)[selectedStructure.key];
+            if (v == null) return null;
+            return (
+              <div className="structure-card-status">
+                {typeof v === 'string' ? v : JSON.stringify(v)}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Right-click verb menu */}
+      {verbMenu && (
+        <VerbMenu
+          npc={verbMenu.npc}
+          screenX={verbMenu.x}
+          screenY={verbMenu.y}
+          onAction={(action) => {
+            if (action === 'examine') setSelectedNPC(verbMenu.npc);
+            else if (action === 'walk_to' && verbMenu.npc.x != null && verbMenu.npc.y != null) {
+              walkTarget.x = (verbMenu.npc.x - GRID_W / 2) * UNIT;
+              walkTarget.z = (verbMenu.npc.y - GRID_H / 2) * UNIT;
+              walkTarget.setAt = performance.now();
+            } else if (action === 'follow') {
+              setSelectedNPC(verbMenu.npc);
+              // Simple follow: snap walkTarget to npc repeatedly - could add a persistent follow state later
+            }
+            setVerbMenu(null);
+          }}
+          onClose={() => setVerbMenu(null)}
+        />
       )}
     </div>
   );

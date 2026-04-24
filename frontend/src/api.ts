@@ -33,6 +33,49 @@ export const api = {
     }),
   autoCycleStop: () =>
     req<AutoCycleStatus>('/api/auto-cycle/stop', { method: 'POST' }),
+  quests: (status?: 'accepted' | 'completed' | 'declined') =>
+    req<Array<{
+      id: number;
+      npc_id: number;
+      quest_key: string;
+      status: 'accepted' | 'completed' | 'declined' | 'offered';
+      accepted_cycle?: number;
+      accepted_by?: 'sr' | 'jr';
+      completed_cycle?: number;
+      completed_by?: 'sr' | 'jr';
+      declined_cycle?: number;
+      npc_name?: string;
+      npc_role?: string;
+      npc_lane?: 'sr' | 'jr';
+    }>>(`/api/quests${status ? `?status=${status}` : ''}`),
+  questTransition: (body: {
+    npc_id: number;
+    quest_key: string;
+    to: 'accepted' | 'completed' | 'declined';
+    leader?: 'sr' | 'jr';
+  }) =>
+    req<{ ok: boolean; id: number; status: string }>('/api/quests/transition', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  affinity: (opts: { min_score?: number; npc_id?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.min_score != null) params.set('min_score', String(opts.min_score));
+    if (opts.npc_id != null) params.set('npc_id', String(opts.npc_id));
+    if (opts.limit != null) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return req<Array<{
+      npc_a: number;
+      npc_b: number;
+      score: string | number;
+      interactions: number;
+      last_cycle: number;
+      last_type: string;
+      milestones_reached: string[];
+      a_name?: string; a_role?: string; a_lane?: 'sr' | 'jr';
+      b_name?: string; b_role?: string; b_lane?: 'sr' | 'jr';
+    }>>(`/api/affinity${qs ? `?${qs}` : ''}`);
+  },
   decide: (body: {
     leader: Lane;
     cycle: number;
