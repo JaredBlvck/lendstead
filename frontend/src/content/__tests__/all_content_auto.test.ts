@@ -15,6 +15,7 @@ import { validateQuest } from "../../game/quests/questValidator";
 import { validateDropTable } from "../../game/drops/dropValidator";
 import { validateRegion } from "../../game/world/regions";
 import { validateFaction } from "../../game/world/factions";
+import { validateEnemy } from "../../game/combat/enemyValidator";
 
 // Vite / vitest glob helpers — eager loads every module at test time.
 const npcModules = import.meta.glob<Record<string, unknown>>(
@@ -39,6 +40,10 @@ const regionModules = import.meta.glob<Record<string, unknown>>(
 );
 const factionModules = import.meta.glob<Record<string, unknown>>(
   "../factions/!(_)*.ts",
+  { eager: true },
+);
+const enemyModules = import.meta.glob<Record<string, unknown>>(
+  "../enemies/!(_)*.ts",
   { eager: true },
 );
 
@@ -72,6 +77,7 @@ describe("content auto-discovery validators", () => {
   const drops = collectExports(dropModules, "drop_");
   const regions = collectExports(regionModules, "region_");
   const factions = collectExports(factionModules, "faction_");
+  const enemies = collectExports(enemyModules, "enemy_");
 
   it("discovers at least one export per domain", () => {
     expect(npcs.length, "no NPC content found").toBeGreaterThan(0);
@@ -80,6 +86,7 @@ describe("content auto-discovery validators", () => {
     expect(drops.length, "no drop table content found").toBeGreaterThan(0);
     expect(regions.length, "no region content found").toBeGreaterThan(0);
     expect(factions.length, "no faction content found").toBeGreaterThan(0);
+    expect(enemies.length, "no enemy content found").toBeGreaterThan(0);
   });
 
   describe("npcs", () => {
@@ -154,6 +161,18 @@ describe("content auto-discovery validators", () => {
     }
   });
 
+  describe("enemies", () => {
+    for (const { path, exportName, value } of enemies) {
+      it(`validateEnemy: ${exportName} (${path.replace(/^.*\/content\//, "")})`, () => {
+        const result = validateEnemy(value) as ValidatorResult;
+        expect(
+          result.ok,
+          `validateEnemy failed for ${exportName}: ${JSON.stringify(result.errors ?? result, null, 2)}`,
+        ).toBe(true);
+      });
+    }
+  });
+
   describe("id uniqueness within each domain", () => {
     it("npc ids are unique", () => {
       const ids = npcs.map((n) => (n.value as { id: string }).id);
@@ -194,6 +213,13 @@ describe("content auto-discovery validators", () => {
       expect(
         new Set(ids).size,
         `duplicate faction ids in: ${ids.join(", ")}`,
+      ).toBe(ids.length);
+    });
+    it("enemy ids are unique", () => {
+      const ids = enemies.map((n) => (n.value as { id: string }).id);
+      expect(
+        new Set(ids).size,
+        `duplicate enemy ids in: ${ids.join(", ")}`,
       ).toBe(ids.length);
     });
   });
