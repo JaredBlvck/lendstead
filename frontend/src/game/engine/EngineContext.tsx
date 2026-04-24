@@ -12,9 +12,11 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from 'react';
 import { loadContentBundle, type ContentBundle } from './contentBundle';
+import { api as lendsteadApi } from '../../api';
 import type { Inventory, Equipment } from '../items/itemTypes';
 import type { QuestRuntimeState } from '../quests/questTypes';
 import type { NpcRuntimeState } from '../npcs/npcTypes';
@@ -24,7 +26,7 @@ import { emptyInventory } from '../items/inventory';
 import { emptyEquipment } from '../items/equipment';
 import { buildSave } from '../save/saveGame';
 import { loadSave } from '../save/loadGame';
-import type { PlayerSnapshot } from '../save/saveTypes';
+import type { PlayerSnapshot, Save } from '../save/saveTypes';
 import type { ShopState } from '../npcs/trade';
 import type { DiscoveryState } from '../archaeology/carvingTypes';
 
@@ -141,7 +143,40 @@ function freshState(): EngineState {
   };
 }
 
-function loadFromStorage(): EngineState | null {
+// Convert a validated Save snapshot into the in-memory EngineState shape.
+// Exported so both localStorage and backend rehydration paths share the
+// same destructuring logic.
+export function snapshotToEngineState(s: Save): EngineState {
+  const inv = s.inventories[0] ?? emptyInventory(s.player.id, 28);
+  const eq = s.equipment[0] ?? emptyEquipment(s.player.id);
+  return {
+    player: s.player as PlayerState,
+    world: s.world,
+    inventory: inv,
+    equipment: eq,
+    questRuntime: s.quest_runtime,
+    npcRuntime: s.npc_runtime,
+    shopStates: (s.shop_states ?? []) as ShopState[],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    discoveryStates: ((s as any).discovery_states ?? []) as DiscoveryState[],
+  };
+}
+
+// Compare two ISO timestamps (either may be empty / undefined). Returns
+// true if `candidateISO` is strictly newer than `currentISO`. Pure.
+export function isNewerSave(candidateISO: string | null | undefined, currentISO: string | null | undefined): boolean {
+  const cand = candidateISO ? Date.parse(candidateISO) : 0;
+  const curr = currentISO ? Date.parse(currentISO) : 0;
+  if (!Number.isFinite(cand) || cand <= 0) return false;
+  return cand > curr;
+}
+
+interface StorageLoadResult {
+  state: EngineState;
+  saved_at_iso: string;
+}
+
+function loadFromStorage(): StorageLoadResult | null {
   if (typeof localStorage === 'undefined') return null;
   const raw = localStorage.getItem(SAVE_SLOT);
   if (!raw) return null;
@@ -149,20 +184,9 @@ function loadFromStorage(): EngineState | null {
     const parsed = JSON.parse(raw);
     const result = loadSave(parsed);
     if (!result.ok || !result.save) return null;
-    const s = result.save;
-    // Save holds an array of inventories/equipment; we only persist one per player.
-    const inv = s.inventories[0] ?? emptyInventory(s.player.id, 28);
-    const eq = s.equipment[0] ?? emptyEquipment(s.player.id);
     return {
-      player: s.player as PlayerState,
-      world: s.world,
-      inventory: inv,
-      equipment: eq,
-      questRuntime: s.quest_runtime,
-      npcRuntime: s.npc_runtime,
-      shopStates: (s.shop_states ?? []) as ShopState[],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      discoveryStates: ((s as any).discovery_states ?? []) as DiscoveryState[],
+      state: snapshotToEngineState(result.save),
+      saved_at_iso: result.save.saved_at_iso ?? '',
     };
   } catch {
     return null;
@@ -215,14 +239,88 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     console.error('Content validation failed on boot:\n' + bundle.errors.join('\n'));
   }
 
+  // Track the timestamp of the currently-loaded snapshot so the backend
+  // rehydration effect knows whether a backend snapshot is actually
+  // NEWER than what's live. We can't trust the in-memory state's
+  // saved_at_iso (it updates on every save) - we need the boot-time
+  // baseline that was loaded from localStorage.
+  const loadedAtISORef = useRef<string>('');
+
   const [state, dispatch] = useReducer(reducer, undefined, () => {
     const loaded = loadFromStorage();
-    return loaded ?? freshState();
+    if (loaded) {
+      loadedAtISORef.current = loaded.saved_at_iso;
+      return loaded.state;
+    }
+    return freshState();
   });
+
+  // Boot-time backend rehydration. Kicks off once on mount:
+  //   - fetch the backend's stored snapshot for this player
+  //   - compare its saved_at_iso to what we loaded from localStorage
+  //   - if backend is newer: replace state wholesale via set_state
+  //   - if local is newer or backend unreachable: no-op (BackendStateSync
+  //     will push local upstream within seconds)
+  // This closes the read-side of the sync pair symmetrically with the
+  // localStorage primary path. No loading UI; the first 200-500ms of
+  // play runs on the localStorage snapshot, then backend replaces it
+  // only if the backend truly has newer bits.
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const playerId = state.player.id;
+        const backend = await lendsteadApi.fetchPlayerState(playerId);
+        if (cancelled || controller.signal.aborted) return;
+        // backend.snapshot is opaque to the server; validate through loadSave
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const parsed = loadSave(backend.snapshot as any);
+        if (!parsed.ok || !parsed.save) return;
+        const backendSavedAt = backend.client_saved_at || parsed.save.saved_at_iso || backend.updated_at;
+        if (!isNewerSave(backendSavedAt, loadedAtISORef.current)) return;
+        // Backend is newer - replace state
+        dispatch({ kind: 'set_state', next: snapshotToEngineState(parsed.save) });
+        loadedAtISORef.current = backendSavedAt;
+        // eslint-disable-next-line no-console
+        console.info('[engine] rehydrated from backend player_state', {
+          player_id: playerId,
+          backend_saved_at: backendSavedAt,
+          local_saved_at: loadedAtISORef.current,
+        });
+      } catch {
+        // Backend unreachable or 404 (no snapshot yet). Silent no-op;
+        // BackendStateSync will push local state upstream momentarily.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // Run once on mount. state.player.id should be stable across renders
+    // within a session (player id is seeded in freshState or reloaded
+    // from localStorage before the effect fires).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Persist on every state change
   useEffect(() => {
     saveToStorage(state);
+    // Track the latest save timestamp so subsequent manual backend loads
+    // (not on boot) can compare correctly. In practice only the boot
+    // effect reads this, but keeping the ref current makes future
+    // extensions (e.g., a manual "Sync from cloud" button) safe.
+    try {
+      const raw = localStorage.getItem(SAVE_SLOT);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { saved_at_iso?: string };
+        if (parsed.saved_at_iso) loadedAtISORef.current = parsed.saved_at_iso;
+      }
+    } catch {
+      // ignore
+    }
   }, [state]);
 
   const api = useMemo<EngineApi>(() => ({
