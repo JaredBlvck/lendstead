@@ -1,5 +1,8 @@
 import express from "express";
 import cors from "cors";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { pool } from "./db.js";
 import {
   generateTerrain,
@@ -1206,8 +1209,31 @@ async function bootHydrate() {
   }
 }
 
+async function runMigrations() {
+  const migrationsDir = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "migrations",
+  );
+  const files = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+  for (const file of files) {
+    const sql = readFileSync(join(migrationsDir, file), "utf8");
+    await pool.query(sql);
+    console.log(`migrated ${file}`);
+  }
+}
+
 const port = Number(process.env.PORT) || 3000;
-app.listen(port, "0.0.0.0", async () => {
-  console.log(`Lendstead API on :${port}`);
-  await bootHydrate();
-});
+(async () => {
+  try {
+    await runMigrations();
+  } catch (err) {
+    console.error("migrations failed, aborting boot", err);
+    process.exit(1);
+  }
+  app.listen(port, "0.0.0.0", async () => {
+    console.log(`Lendstead API on :${port}`);
+    await bootHydrate();
+  });
+})();
