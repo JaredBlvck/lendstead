@@ -16,6 +16,7 @@ import { useEvents } from '../hooks/useWorld';
 import { buildDisplayEvents, type DisplayEvent } from '../lib/events';
 import { VirtualJoystick } from './VirtualJoystick';
 import { audio } from '../lib/audio';
+import { generateFlavor } from '../lib/flavor';
 
 // Input state shared by keyboard + joystick + click-to-walk. FPSController
 // reads this instead of a key map directly, so touch and mouse+keyboard
@@ -46,7 +47,7 @@ const TILE_TO_COLOR: Record<TileType, string> = {
 const UNIT = 2;
 const MAX_ELEVATION = 5;
 
-type CamMode = 'orbit' | 'fps';
+type CamMode = 'orbit' | 'fps' | 'tp';
 
 // ---------- TERRAIN (unchanged from v6.0 + return a height map) ----------
 
@@ -412,6 +413,12 @@ function Structure({ placement, heightMap }: { placement: StructurePlacement; he
     );
   }
   if (/outpost|camp|central/.test(key)) {
+    // Central camp becomes a TEMPLE - stepped pyramid with glowing top,
+    // dominant focal point. Outposts stay as tent clusters.
+    const isCentral = /central/i.test(key);
+    if (isCentral) {
+      return <Temple position={[wx, baseY, wz]} />;
+    }
     return (
       <group position={[wx, baseY, wz]}>
         <mesh position={[-0.35, 0.5, 0]} castShadow>
@@ -506,19 +513,15 @@ function EventMarker({ evt, baseHeight }: { evt: DisplayEvent; baseHeight: numbe
   const groupRef = useRef<THREE.Group>(null);
   const x = (evt.x - GRID_W / 2) * UNIT;
   const z = (evt.y - GRID_H / 2) * UNIT;
-  const color =
-    evt.kind === 'discovery' ? '#5eead4' :
-    evt.kind === 'threat'    ? '#ef4444' :
-                               '#5080b0';
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
-    const pulse = 0.5 + 0.5 * Math.sin(clock.elapsedTime * 4);
-    groupRef.current.scale.setScalar(0.8 + pulse * 0.4);
+    if (evt.kind === 'storm') return;
+    const pulse = 0.5 + 0.5 * Math.sin(clock.elapsedTime * 3);
+    groupRef.current.scale.setScalar(0.92 + pulse * 0.12);
   });
 
   if (evt.kind === 'storm') {
-    // Dark dome over affected area + subtle rain column sprite
     return (
       <group position={[x, baseHeight + 0.5, z]}>
         <mesh>
@@ -535,40 +538,413 @@ function EventMarker({ evt, baseHeight }: { evt: DisplayEvent; baseHeight: numbe
     );
   }
 
+  if (evt.kind === 'discovery') {
+    // Campfire marker - stone ring + wood + emissive fire + glow light
+    return (
+      <group ref={groupRef} position={[x, baseHeight + 0.05, z]}>
+        {/* Stone ring */}
+        <mesh position={[0, 0.08, 0]}>
+          <torusGeometry args={[0.5, 0.12, 8, 16]} />
+          <meshStandardMaterial color="#6b6b72" roughness={0.9} />
+        </mesh>
+        {/* Logs crossed */}
+        <mesh position={[0, 0.18, 0]} rotation={[0, 0, 0.3]}>
+          <boxGeometry args={[0.7, 0.1, 0.1]} />
+          <meshStandardMaterial color="#4a2e1a" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 0.18, 0]} rotation={[0, Math.PI / 2, -0.3]}>
+          <boxGeometry args={[0.7, 0.1, 0.1]} />
+          <meshStandardMaterial color="#4a2e1a" roughness={0.9} />
+        </mesh>
+        {/* Flame */}
+        <mesh position={[0, 0.4, 0]}>
+          <coneGeometry args={[0.22, 0.45, 8]} />
+          <meshStandardMaterial
+            color="#ff9a2a"
+            emissive="#ff7a10"
+            emissiveIntensity={2.5}
+            transparent
+            opacity={0.92}
+          />
+        </mesh>
+        {/* Inner bright core */}
+        <mesh position={[0, 0.3, 0]}>
+          <sphereGeometry args={[0.12, 8, 8]} />
+          <meshStandardMaterial
+            color="#ffe080"
+            emissive="#ffe080"
+            emissiveIntensity={3.5}
+          />
+        </mesh>
+        <pointLight position={[0, 0.6, 0]} color="#ff9a40" intensity={1.4} distance={7} />
+      </group>
+    );
+  }
+
+  // threat: red warning cairn - spiked rock pile
   return (
-    <group ref={groupRef} position={[x, baseHeight + 0.5, z]}>
-      {/* Vertical beam of light */}
-      <mesh position={[0, 2, 0]}>
-        <cylinderGeometry args={[0.15, 0.05, 4, 8]} />
+    <group ref={groupRef} position={[x, baseHeight + 0.05, z]}>
+      {/* Base rock */}
+      <mesh position={[0, 0.2, 0]} castShadow>
+        <dodecahedronGeometry args={[0.45]} />
+        <meshStandardMaterial color="#4a2020" roughness={0.9} />
+      </mesh>
+      {/* Top warning stone with emissive red */}
+      <mesh position={[0, 0.75, 0]} castShadow>
+        <octahedronGeometry args={[0.3]} />
         <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={evt.kind === 'threat' ? 2 : 1.5}
-          transparent
-          opacity={0.7}
+          color="#ef4444"
+          emissive="#ef4444"
+          emissiveIntensity={1.5}
+          roughness={0.4}
         />
       </mesh>
-      {/* Rising orb */}
-      <mesh position={[0, 3.5, 0]}>
-        <sphereGeometry args={[0.25, 12, 12]} />
-        <meshStandardMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={3}
-        />
-      </mesh>
-      {/* Ground-level light source to illuminate surroundings */}
-      <pointLight
-        position={[0, 1.5, 0]}
-        color={color}
-        intensity={1.2}
-        distance={6}
-      />
+      <pointLight position={[0, 0.8, 0]} color="#ef4444" intensity={1.0} distance={5} />
     </group>
   );
 }
 
+// ---------- TEMPLE (central focal point) ----------
+// Three-stepped stone pyramid with an emissive spire and rising particle
+// sparks. The dominant structure on the island - visible from anywhere
+// thanks to height + bloom.
+function Temple({ position }: { position: [number, number, number] }) {
+  const spireRef = useRef<THREE.Mesh>(null);
+  const particlesRef = useRef<THREE.Points>(null);
+
+  // Rising particle cloud
+  const particleGeom = useMemo(() => {
+    const N = 40;
+    const pos = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * 0.6;
+      pos[i * 3 + 1] = Math.random() * 2.0;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 0.6;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    return g;
+  }, []);
+
+  useFrame(({ clock }, delta) => {
+    if (spireRef.current) {
+      const pulse = 2.5 + Math.sin(clock.elapsedTime * 2) * 0.8;
+      (spireRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = pulse;
+      spireRef.current.rotation.y += delta * 0.4;
+    }
+    if (particlesRef.current) {
+      const pos = particleGeom.attributes.position.array as Float32Array;
+      for (let i = 0; i < pos.length / 3; i++) {
+        pos[i * 3 + 1] += delta * (0.4 + (i % 7) * 0.05);
+        if (pos[i * 3 + 1] > 3.5) {
+          pos[i * 3 + 1] = 0;
+          pos[i * 3] = (Math.random() - 0.5) * 0.6;
+          pos[i * 3 + 2] = (Math.random() - 0.5) * 0.6;
+        }
+      }
+      particleGeom.attributes.position.needsUpdate = true;
+    }
+  });
+
+  return (
+    <group position={position}>
+      {/* Base tier */}
+      <mesh position={[0, 0.3, 0]} castShadow receiveShadow>
+        <boxGeometry args={[2.6, 0.6, 2.6]} />
+        <meshStandardMaterial color="#7a7a85" roughness={0.9} />
+      </mesh>
+      {/* Second tier */}
+      <mesh position={[0, 0.85, 0]} castShadow>
+        <boxGeometry args={[2.0, 0.5, 2.0]} />
+        <meshStandardMaterial color="#8a8a95" roughness={0.9} />
+      </mesh>
+      {/* Third tier */}
+      <mesh position={[0, 1.3, 0]} castShadow>
+        <boxGeometry args={[1.4, 0.4, 1.4]} />
+        <meshStandardMaterial color="#9a9aa5" roughness={0.85} />
+      </mesh>
+      {/* Spire (glows + rotates) */}
+      <mesh ref={spireRef} position={[0, 2.1, 0]} castShadow>
+        <octahedronGeometry args={[0.35]} />
+        <meshStandardMaterial
+          color="#5eead4"
+          emissive="#5eead4"
+          emissiveIntensity={2.5}
+        />
+      </mesh>
+      {/* Rising sparks */}
+      <points ref={particlesRef} geometry={particleGeom} position={[0, 1.5, 0]}>
+        <pointsMaterial
+          color="#5eead4"
+          size={0.06}
+          transparent
+          opacity={0.9}
+          depthWrite={false}
+          sizeAttenuation
+        />
+      </points>
+      {/* Four corner torches */}
+      {([[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]] as Array<[number, number]>).map(
+        ([ox, oz], i) => (
+          <group key={i} position={[ox, 0.7, oz]}>
+            <mesh>
+              <cylinderGeometry args={[0.06, 0.06, 0.5, 6]} />
+              <meshStandardMaterial color="#4a2e1a" roughness={0.9} />
+            </mesh>
+            <mesh position={[0, 0.35, 0]}>
+              <sphereGeometry args={[0.1, 8, 8]} />
+              <meshStandardMaterial
+                color="#ff9a2a"
+                emissive="#ff7a10"
+                emissiveIntensity={2.5}
+              />
+            </mesh>
+          </group>
+        ),
+      )}
+      {/* Central illumination */}
+      <pointLight position={[0, 2.2, 0]} color="#5eead4" intensity={2.0} distance={12} />
+    </group>
+  );
+}
+
+// ---------- PLAYER CHARACTER (third-person entity) ----------
+
+interface PlayerState {
+  pos: THREE.Vector3;
+  yaw: number;
+  moving: boolean;
+  walkPhase: number;
+}
+
 // ---------- FPS CONTROLLER ----------
+
+// Third-person controller: a visible avatar entity moves via WASD /
+// joystick / click-to-walk. Camera follows 5 units behind + 3 above
+// with a smooth lag.
+function ThirdPersonController({
+  heightAt,
+  enabled,
+  playerRef,
+}: {
+  heightAt: Map<string, number>;
+  enabled: boolean;
+  playerRef: React.MutableRefObject<PlayerState>;
+}) {
+  const { camera } = useThree();
+  const keys = useRef<Record<string, boolean>>({});
+  const velocity = useRef(new THREE.Vector3());
+  const cameraTarget = useRef(new THREE.Vector3());
+  const cameraLookAt = useRef(new THREE.Vector3());
+
+  useEffect(() => {
+    if (!enabled) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      keys.current[e.code] = true;
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      keys.current[e.code] = false;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [enabled]);
+
+  useFrame((_, delta) => {
+    if (!enabled) return;
+    const p = playerRef.current;
+    const BASE_SPEED = 6;
+    const sprint = keys.current['ShiftLeft'] || keys.current['ShiftRight'] ? 2.0 : 1;
+    const speed = BASE_SPEED * sprint;
+
+    // Movement vector in world space derived from camera yaw (so
+    // W goes where the camera is pointing).
+    const fwd = new THREE.Vector3();
+    camera.getWorldDirection(fwd);
+    fwd.y = 0;
+    fwd.normalize();
+    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0));
+
+    velocity.current.set(0, 0, 0);
+    if (keys.current['KeyW'] || keys.current['ArrowUp']) velocity.current.add(fwd);
+    if (keys.current['KeyS'] || keys.current['ArrowDown']) velocity.current.sub(fwd);
+    if (keys.current['KeyA'] || keys.current['ArrowLeft']) velocity.current.sub(right);
+    if (keys.current['KeyD'] || keys.current['ArrowRight']) velocity.current.add(right);
+    if (Math.abs(moveInput.x) > 0.05 || Math.abs(moveInput.y) > 0.05) {
+      velocity.current.add(fwd.clone().multiplyScalar(-moveInput.y));
+      velocity.current.add(right.clone().multiplyScalar(moveInput.x));
+    }
+
+    const manualInput = velocity.current.lengthSq() > 0;
+    if (walkTarget.x != null && walkTarget.z != null) {
+      if (manualInput) {
+        walkTarget.x = null;
+        walkTarget.z = null;
+      } else {
+        const dx = walkTarget.x - p.pos.x;
+        const dz = walkTarget.z - p.pos.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 0.6) {
+          walkTarget.x = null;
+          walkTarget.z = null;
+        } else {
+          velocity.current.add(new THREE.Vector3(dx, 0, dz).normalize());
+        }
+      }
+    }
+
+    const wasMoving = p.moving;
+    if (velocity.current.lengthSq() > 0) {
+      velocity.current.normalize().multiplyScalar(speed * delta);
+      p.pos.x += velocity.current.x;
+      p.pos.z += velocity.current.z;
+      p.yaw = Math.atan2(velocity.current.x, velocity.current.z);
+      p.moving = true;
+    } else {
+      p.moving = false;
+    }
+    p.walkPhase += delta * (p.moving ? 6 : 0.8);
+
+    // Clamp to bounds
+    const halfX = (GRID_W / 2) * UNIT - 1;
+    const halfZ = (GRID_H / 2) * UNIT - 1;
+    p.pos.x = Math.max(-halfX - 15, Math.min(halfX + 15, p.pos.x));
+    p.pos.z = Math.max(-halfZ - 15, Math.min(halfZ + 15, p.pos.z));
+
+    // Terrain-follow for player y
+    const tx = Math.round(p.pos.x / UNIT + GRID_W / 2);
+    const tz = Math.round(p.pos.z / UNIT + GRID_H / 2);
+    const h = heightAt.get(`${tx},${tz}`);
+    if (h != null) p.pos.y = h;
+    else p.pos.y = 0.2;
+
+    // Camera chase position: behind player based on movement direction,
+    // 3 above, 5.5 back. Smooth lag so it doesn't snap.
+    const chaseYaw = p.yaw;
+    const backDist = 5.5;
+    const upDist = 3.0;
+    cameraTarget.current.set(
+      p.pos.x - Math.sin(chaseYaw) * backDist,
+      p.pos.y + upDist,
+      p.pos.z - Math.cos(chaseYaw) * backDist,
+    );
+    cameraLookAt.current.set(p.pos.x, p.pos.y + 1.2, p.pos.z);
+
+    const lag = wasMoving || p.moving ? 4 : 2; // snappier when moving
+    camera.position.lerp(cameraTarget.current, Math.min(1, lag * delta));
+    const look = new THREE.Vector3();
+    camera.getWorldDirection(look);
+    const lookTarget = cameraLookAt.current.clone().sub(camera.position).normalize();
+    const blended = look.lerp(lookTarget, Math.min(1, 6 * delta)).normalize();
+    camera.lookAt(camera.position.clone().add(blended));
+  });
+
+  return null;
+}
+
+function PlayerAvatar({ playerRef }: { playerRef: React.MutableRefObject<PlayerState> }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    const p = playerRef.current;
+    groupRef.current.position.copy(p.pos);
+    groupRef.current.rotation.y = p.yaw;
+    const amp = p.moving ? 0.65 : 0.08;
+    const phase = p.walkPhase;
+    if (leftLegRef.current) leftLegRef.current.rotation.x = Math.sin(phase) * amp;
+    if (rightLegRef.current) rightLegRef.current.rotation.x = -Math.sin(phase) * amp;
+    if (leftArmRef.current) leftArmRef.current.rotation.x = -Math.sin(phase) * amp * 0.85;
+    if (rightArmRef.current) rightArmRef.current.rotation.x = Math.sin(phase) * amp * 0.85;
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Body */}
+      <mesh position={[0, 0.95, 0]} castShadow>
+        <boxGeometry args={[0.5, 0.55, 0.28]} />
+        <meshStandardMaterial color="#fde047" roughness={0.75} />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, 1.42, 0]} castShadow>
+        <boxGeometry args={[0.34, 0.32, 0.32]} />
+        <meshStandardMaterial color="#d4a684" roughness={0.55} />
+      </mesh>
+      {/* Hair */}
+      <mesh position={[0, 1.6, 0]} castShadow>
+        <boxGeometry args={[0.36, 0.12, 0.34]} />
+        <meshStandardMaterial color="#2a1f15" roughness={0.65} />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-0.08, 1.44, 0.17]}>
+        <boxGeometry args={[0.05, 0.05, 0.02]} />
+        <meshStandardMaterial color="#0b0e14" />
+      </mesh>
+      <mesh position={[0.08, 1.44, 0.17]}>
+        <boxGeometry args={[0.05, 0.05, 0.02]} />
+        <meshStandardMaterial color="#0b0e14" />
+      </mesh>
+      {/* Player glowing crown - distinguishes from NPCs */}
+      <mesh position={[0, 1.72, 0]}>
+        <torusGeometry args={[0.18, 0.04, 6, 12]} />
+        <meshStandardMaterial
+          color="#fde047"
+          emissive="#fde047"
+          emissiveIntensity={1.5}
+        />
+      </mesh>
+      {/* Arms */}
+      <group ref={leftArmRef} position={[-0.34, 1.14, 0]}>
+        <mesh position={[0, -0.28, 0]} castShadow>
+          <boxGeometry args={[0.16, 0.5, 0.16]} />
+          <meshStandardMaterial color="#fde047" roughness={0.75} />
+        </mesh>
+        <mesh position={[0, -0.58, 0]} castShadow>
+          <boxGeometry args={[0.13, 0.1, 0.13]} />
+          <meshStandardMaterial color="#d4a684" roughness={0.55} />
+        </mesh>
+      </group>
+      <group ref={rightArmRef} position={[0.34, 1.14, 0]}>
+        <mesh position={[0, -0.28, 0]} castShadow>
+          <boxGeometry args={[0.16, 0.5, 0.16]} />
+          <meshStandardMaterial color="#fde047" roughness={0.75} />
+        </mesh>
+        <mesh position={[0, -0.58, 0]} castShadow>
+          <boxGeometry args={[0.13, 0.1, 0.13]} />
+          <meshStandardMaterial color="#d4a684" roughness={0.55} />
+        </mesh>
+      </group>
+      {/* Legs */}
+      <group ref={leftLegRef} position={[-0.14, 0.66, 0]}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.55, 0.18]} />
+          <meshStandardMaterial color="#2a2f3d" roughness={0.8} />
+        </mesh>
+        <mesh position={[0, -0.61, 0.04]} castShadow>
+          <boxGeometry args={[0.2, 0.08, 0.24]} />
+          <meshStandardMaterial color="#1a1f28" roughness={0.9} />
+        </mesh>
+      </group>
+      <group ref={rightLegRef} position={[0.14, 0.66, 0]}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.18, 0.55, 0.18]} />
+          <meshStandardMaterial color="#2a2f3d" roughness={0.8} />
+        </mesh>
+        <mesh position={[0, -0.61, 0.04]} castShadow>
+          <boxGeometry args={[0.2, 0.08, 0.24]} />
+          <meshStandardMaterial color="#1a1f28" roughness={0.9} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
 
 function FPSController({ heightAt, enabled }: { heightAt: Map<string, number>; enabled: boolean }) {
   const { camera } = useThree();
@@ -722,10 +1098,26 @@ function SceneLighting() {
 }
 
 function WaterPlane() {
+  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame(({ clock }) => {
+    // Subtle color breathing to suggest flow without a custom shader
+    if (matRef.current) {
+      const t = Math.sin(clock.elapsedTime * 0.4) * 0.5 + 0.5;
+      const c = new THREE.Color(0x13263d).lerp(new THREE.Color(0x1a3555), t * 0.3);
+      matRef.current.color.copy(c);
+    }
+  });
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]} receiveShadow>
-      <planeGeometry args={[GRID_W * UNIT * 3, GRID_H * UNIT * 3]} />
-      <meshStandardMaterial color="#13263d" transparent opacity={0.9} roughness={0.1} />
+      <planeGeometry args={[GRID_W * UNIT * 3, GRID_H * UNIT * 3, 24, 24]} />
+      <meshStandardMaterial
+        ref={matRef}
+        color="#13263d"
+        transparent
+        opacity={0.92}
+        roughness={0.08}
+        metalness={0.15}
+      />
     </mesh>
   );
 }
@@ -745,6 +1137,14 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
   const [selectedNPC, setSelectedNPC] = useState<NPC | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const isTouch = useMemo(() => isTouchDevice(), []);
+
+  // Third-person player entity (position, yaw, motion state)
+  const playerRef = useRef<PlayerState>({
+    pos: new THREE.Vector3(0, 0.2, 0),
+    yaw: 0,
+    moving: false,
+    walkPhase: 0,
+  });
 
   // Smithy anvil clink while in 3D - periodic chime every 4-7 seconds to
   // suggest work happening at the forge. Only fires when sound is on.
@@ -841,7 +1241,7 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
   );
 
   const toggleMode = useCallback(() => {
-    setMode((m) => (m === 'orbit' ? 'fps' : 'orbit'));
+    setMode((m) => (m === 'orbit' ? 'tp' : m === 'tp' ? 'fps' : 'orbit'));
     setLocked(false);
   }, []);
 
@@ -876,19 +1276,23 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           <div className="hud-title">{world.civ_name}</div>
           <div className="hud-sub">
             Cycle {world.cycle} &middot; {aliveNPCs.length} alive &middot;{' '}
-            {mode === 'orbit' ? 'Orbit view' : 'First-person'}
+            {mode === 'orbit' ? 'Orbit view' : mode === 'tp' ? 'Third-person' : 'First-person'}
           </div>
         </div>
         <div className="hud-right">
           <div className="hud-help">
             {mode === 'orbit'
               ? 'drag to orbit · scroll to zoom · right-drag to pan'
-              : isTouch
-                ? 'tap to walk · joystick for precision · drag empty space to look'
-                : 'click to walk · WASD + shift for precision · click blank for free look'}
+              : mode === 'tp'
+                ? isTouch
+                  ? 'tap to walk · joystick to move · drag to rotate camera'
+                  : 'click to walk · WASD to move · shift to sprint'
+                : isTouch
+                  ? 'tap to walk · joystick for precision · drag empty space to look'
+                  : 'click to walk · WASD + shift for precision · click blank for free look'}
           </div>
           <button className="mode-toggle" onClick={toggleMode}>
-            {mode === 'orbit' ? 'Walk Mode' : 'Orbit Mode'}
+            {mode === 'orbit' ? 'Third Person' : mode === 'tp' ? 'First Person' : 'Orbit'}
           </button>
           <button
             className="sound-toggle"
@@ -906,8 +1310,10 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
         shadows
         camera={{ position: [GRID_W * 0.4, GRID_H * 0.6, GRID_H * 0.9], fov: 65 }}
         style={{ background: '#081422', touchAction: mode === 'fps' ? 'none' : 'auto' }}
-        onClick={() => {
+        onClick={(e) => {
           if (mode === 'fps' && !isTouch && !locked) setLocked(true);
+          // In third-person, click-to-walk is handled by WalkTargetPicker
+          void e;
         }}
         onTouchStart={onTouchStartCanvas}
         onTouchMove={onTouchMoveCanvas}
@@ -920,10 +1326,12 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           mieCoefficient={0.005}
           mieDirectionalG={0.8}
         />
+        {/* Depth fog for atmospheric distance falloff */}
+        <fog attach="fog" args={['#7a9eb0', 25, 140]} />
         <SceneLighting />
         <WaterPlane />
         <Terrain tiles={tiles} />
-        <WalkTargetPicker enabled={mode === 'fps'} onSet={() => audio.tap()} />
+        <WalkTargetPicker enabled={mode === 'fps' || mode === 'tp'} onSet={() => audio.tap()} />
         {structures.map((s, i) => (
           <Structure key={`${s.key}-${i}`} placement={s} heightMap={heightAt} />
         ))}
@@ -976,7 +1384,8 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           <Vignette eskil={false} offset={0.15} darkness={0.6} blendFunction={BlendFunction.NORMAL} />
           <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         </EffectComposer>
-        {mode === 'orbit' ? (
+        {mode === 'tp' && <PlayerAvatar playerRef={playerRef} />}
+        {mode === 'orbit' && (
           <OrbitControls
             makeDefault
             minDistance={5}
@@ -984,7 +1393,15 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             maxPolarAngle={Math.PI / 2.1}
             target={[0, 0, 0]}
           />
-        ) : (
+        )}
+        {mode === 'tp' && (
+          <ThirdPersonController
+            heightAt={heightAt}
+            enabled={mode === 'tp'}
+            playerRef={playerRef}
+          />
+        )}
+        {mode === 'fps' && (
           <>
             <FPSController heightAt={heightAt} enabled={mode === 'fps' && (isTouch || locked)} />
             {locked && !isTouch && (
@@ -996,7 +1413,7 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
           </>
         )}
       </Canvas>
-      {mode === 'fps' && isTouch && (
+      {(mode === 'fps' || mode === 'tp') && isTouch && (
         <VirtualJoystick
           onChange={(x, y) => {
             moveInput.x = x;
@@ -1042,6 +1459,11 @@ export function ExplorationView({ world, npcs, onExit }: Props) {
             </div>
           )}
           <div className="npc-card-status">{selectedNPC.status}</div>
+          <div className="npc-card-flavor">
+            <span className="npc-card-quote">"</span>
+            {generateFlavor(selectedNPC, world.civ_name)}
+            <span className="npc-card-quote">"</span>
+          </div>
         </div>
       )}
 
