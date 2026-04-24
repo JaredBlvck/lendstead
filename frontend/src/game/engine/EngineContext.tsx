@@ -25,6 +25,7 @@ import { emptyEquipment } from '../items/equipment';
 import { buildSave } from '../save/saveGame';
 import { loadSave } from '../save/loadGame';
 import type { PlayerSnapshot } from '../save/saveTypes';
+import type { ShopState } from '../npcs/trade';
 
 const SAVE_SLOT = 'lendstead_save';
 
@@ -46,6 +47,7 @@ export interface EngineState {
   equipment: Equipment;
   questRuntime: QuestRuntimeState[];
   npcRuntime: NpcRuntimeState[];
+  shopStates: ShopState[];
 }
 
 type Action =
@@ -56,7 +58,8 @@ type Action =
   | { kind: 'set_equipment'; next: Equipment }
   | { kind: 'set_quest_runtime'; next: QuestRuntimeState[] }
   | { kind: 'upsert_quest_runtime'; row: QuestRuntimeState }
-  | { kind: 'set_npc_runtime'; next: NpcRuntimeState[] };
+  | { kind: 'set_npc_runtime'; next: NpcRuntimeState[] }
+  | { kind: 'upsert_shop_state'; row: ShopState };
 
 function reducer(state: EngineState, action: Action): EngineState {
   switch (action.kind) {
@@ -74,6 +77,13 @@ function reducer(state: EngineState, action: Action): EngineState {
       return { ...state, questRuntime: next };
     }
     case 'set_npc_runtime': return { ...state, npcRuntime: action.next };
+    case 'upsert_shop_state': {
+      const existing = state.shopStates.find((s) => s.npc_id === action.row.npc_id);
+      const next = existing
+        ? state.shopStates.map((s) => (s.npc_id === action.row.npc_id ? action.row : s))
+        : [...state.shopStates, action.row];
+      return { ...state, shopStates: next };
+    }
     default: return state;
   }
 }
@@ -92,6 +102,7 @@ function freshState(): EngineState {
     equipment: emptyEquipment(playerId),
     questRuntime: [],
     npcRuntime: [],
+    shopStates: [],
   };
 }
 
@@ -114,6 +125,7 @@ function loadFromStorage(): EngineState | null {
       equipment: eq,
       questRuntime: s.quest_runtime,
       npcRuntime: s.npc_runtime,
+      shopStates: (s.shop_states ?? []) as ShopState[],
     };
   } catch {
     return null;
@@ -131,6 +143,7 @@ function saveToStorage(state: EngineState): void {
       equipment: [state.equipment],
       npc_runtime: state.npcRuntime,
       quest_runtime: state.questRuntime,
+      shop_states: state.shopStates,
     });
     localStorage.setItem(SAVE_SLOT, JSON.stringify(save));
   } catch (e) {
@@ -149,6 +162,7 @@ export interface EngineApi {
   upsertQuestRuntime: (row: QuestRuntimeState) => void;
   setQuestRuntime: (rows: QuestRuntimeState[]) => void;
   setNpcRuntime: (rows: NpcRuntimeState[]) => void;
+  upsertShopState: (row: ShopState) => void;
   resetToFresh: () => void;
 }
 
@@ -183,6 +197,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     upsertQuestRuntime: (row) => dispatch({ kind: 'upsert_quest_runtime', row }),
     setQuestRuntime: (rows) => dispatch({ kind: 'set_quest_runtime', next: rows }),
     setNpcRuntime: (rows) => dispatch({ kind: 'set_npc_runtime', next: rows }),
+    upsertShopState: (row) => dispatch({ kind: 'upsert_shop_state', row }),
     resetToFresh: () => dispatch({ kind: 'set_state', next: freshState() }),
   }), [bundle, state]);
 

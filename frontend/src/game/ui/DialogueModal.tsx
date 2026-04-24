@@ -2,8 +2,9 @@
 // resolveDialogue. Applies side-effect hints (set memory flag, change
 // dialogue state, trigger quest) when the line is acknowledged.
 
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useEngine } from '../engine/EngineContext';
+import { ShopPanel } from './ShopPanel';
 import { resolveDialogue } from '../npcs/npcDialogue';
 import { setFlag as setMemoryFlag } from '../npcs/npcMemory';
 import type { NpcRuntimeState } from '../npcs/npcTypes';
@@ -54,6 +55,7 @@ interface Props {
 
 export function DialogueModal({ npcId, onClose }: Props) {
   const engine = useEngine();
+  const [shopOpen, setShopOpen] = useState(false);
   if (!npcId) return null;
   const npc = engine.bundle.npcs.get(npcId);
   if (!npc) return null;
@@ -127,9 +129,20 @@ export function DialogueModal({ npcId, onClose }: Props) {
           {resolution.line?.text ?? <span style={styles.empty}>{npc.name} says nothing.</span>}
         </div>
         <div style={styles.actions}>
+          {npc.shop_inventory.length > 0 && (
+            <button style={styles.btn} onClick={() => setShopOpen(true)}>
+              browse wares
+            </button>
+          )}
           <button style={styles.btn} onClick={applyAndClose}>continue</button>
         </div>
       </div>
+      {shopOpen && (
+        <ShopPanel
+          npcId={npc.id}
+          onClose={() => setShopOpen(false)}
+        />
+      )}
     </div>
   );
 }

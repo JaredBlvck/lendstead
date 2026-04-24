@@ -2,7 +2,7 @@
 // (for localStorage or download). Schema-version stamps are written here so
 // migrations can detect the source version on load.
 
-import { Save, SAVE_SCHEMA_VERSION, type Save as SaveType, type PlayerSnapshot } from './saveTypes';
+import { Save, SAVE_SCHEMA_VERSION, type Save as SaveType, type PlayerSnapshot, type ShopStateSnapshot } from './saveTypes';
 import type { WorldState } from '../world/worldState';
 import type { Inventory, Equipment } from '../items/itemTypes';
 import type { NpcRuntimeState } from '../npcs/npcTypes';
@@ -15,6 +15,7 @@ export interface SnapshotInput {
   equipment: Equipment[];
   npc_runtime: NpcRuntimeState[];
   quest_runtime: QuestRuntimeState[];
+  shop_states?: ShopStateSnapshot[];
 }
 
 export function buildSave(input: SnapshotInput): SaveType {
@@ -27,6 +28,7 @@ export function buildSave(input: SnapshotInput): SaveType {
     equipment: input.equipment,
     npc_runtime: input.npc_runtime,
     quest_runtime: input.quest_runtime,
+    shop_states: input.shop_states ?? [],
   };
   // Validate on the way out to catch authoring bugs early.
   const parsed = Save.safeParse(save);
