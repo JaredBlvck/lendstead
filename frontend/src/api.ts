@@ -89,4 +89,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // Player state (Sr client engine snapshot). Backend stores as opaque
+  // JSONB; shape validation is owned by the client Save schema.
+  syncPlayerState: (body: {
+    player_id: string;
+    snapshot: unknown;
+    schema_version?: number;
+    client_saved_at?: string;
+  }) =>
+    req<{
+      id: number;
+      player_id: string;
+      schema_version: number;
+      updated_at: string;
+    }>('/api/player-state', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  fetchPlayerState: (playerId: string) =>
+    req<{
+      player_id: string;
+      snapshot: unknown;
+      schema_version: number;
+      client_saved_at: string | null;
+      updated_at: string;
+    }>(`/api/player-state/${encodeURIComponent(playerId)}`),
 };

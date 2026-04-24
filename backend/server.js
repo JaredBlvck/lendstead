@@ -1673,6 +1673,70 @@ app.get("/api/affinity", async (req, res, next) => {
   }
 });
 
+// === PLAYER STATE (client-authored snapshots) ===
+//
+// Sr's engine POSTs its full state snapshot here on a throttled cadence
+// and on explicit save. Backend treats the snapshot as opaque JSONB;
+// shape validation is owned by the client (Sr's zod Save schema). This
+// gives us cross-session persistence and a read surface Jr's backend sim
+// can use later to cross-pollinate state (e.g., NPC reactions that
+// depend on quests the player has completed).
+
+// POST /api/player-state
+// body: { player_id: string, snapshot: object, schema_version?: number, client_saved_at?: string }
+app.post("/api/player-state", async (req, res, next) => {
+  try {
+    const { player_id, snapshot, schema_version, client_saved_at } =
+      req.body || {};
+    if (!player_id || typeof player_id !== "string") {
+      return res.status(400).json({ error: "player_id (string) required" });
+    }
+    if (!snapshot || typeof snapshot !== "object") {
+      return res.status(400).json({ error: "snapshot (object) required" });
+    }
+    const version = Number.isFinite(Number(schema_version))
+      ? Number(schema_version)
+      : 1;
+    const clientSavedAt =
+      client_saved_at && typeof client_saved_at === "string"
+        ? client_saved_at
+        : null;
+
+    const { rows } = await pool.query(
+      `INSERT INTO player_state (player_id, snapshot, schema_version, client_saved_at)
+       VALUES ($1, $2::jsonb, $3, $4)
+       ON CONFLICT (player_id) DO UPDATE
+         SET snapshot = EXCLUDED.snapshot,
+             schema_version = EXCLUDED.schema_version,
+             client_saved_at = EXCLUDED.client_saved_at,
+             updated_at = now()
+       RETURNING id, player_id, schema_version, updated_at`,
+      [player_id, JSON.stringify(snapshot), version, clientSavedAt],
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// GET /api/player-state/:player_id
+// Returns the stored snapshot or 404 if none exists.
+app.get("/api/player-state/:player_id", async (req, res, next) => {
+  try {
+    const playerId = String(req.params.player_id || "");
+    if (!playerId) return res.status(400).json({ error: "player_id required" });
+    const { rows } = await pool.query(
+      `SELECT player_id, snapshot, schema_version, client_saved_at, updated_at
+       FROM player_state WHERE player_id = $1 LIMIT 1`,
+      [playerId],
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "not found" });
+    res.json(rows[0]);
+  } catch (e) {
+    next(e);
+  }
+});
+
 // Error handler
 app.use((err, _req, res, _next) => {
   console.error("api error", err);
